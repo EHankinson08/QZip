@@ -357,6 +357,23 @@ static void dec_block(job_t *j, size_t i) {
   if (bad) D->err = bad;
 }
 
+/* Encoded size of [s, s+n) with a fixed block size (no thread-shrink). Used to pick -b. */
+static size_t measure_enc(const uint8_t *s, size_t n, size_t bs, int tier, int delim, int zl, int T) {
+  if (bs == 0) bs = n ? n : 1;
+  size_t cap = n / bs + 2, nb = 0, p = 0;
+  blk_t *B = (blk_t *)calloc(cap + 1, sizeof(blk_t));
+  while (p < n || nb == 0) {
+    size_t e = p + bs < n ? p + bs : n;
+    if (delim && e < n) { size_t q = e; while (q < n && s[q] != '\n') q++; e = q < n ? q + 1 : n; }
+    if (nb >= cap) { cap *= 2; B = (blk_t *)realloc(B, (cap + 1) * sizeof(blk_t)); memset(B + nb, 0, (cap + 1 - nb) * sizeof(blk_t)); }
+    B[nb].raw = s + p; B[nb].rawlen = e - p; nb++; p = e; if (n == 0) break;
+  }
+  cctx_t C = {B, tier, delim, zl, 1};
+  run_par(comp_block, &C, nb, T);
+  size_t tot = 20 + nb * 22; int bad = 0;
+  for (size_t i = 0; i < nb; i++) { if (B[i].err) bad = 1; tot += B[i].c.n; free(B[i].c.b); free(B[i].t.b); }
+  free(B); return bad ? (size_t)-1 : tot;
+}
 static uint8_t *readall(const char *path, size_t *n) {
   FILE *f = strcmp(path, "-") ? fopen(path, "rb") : stdin; if (!f) die("cannot open input");
   buf b = {0}; uint8_t tmp[1 << 16]; size_t k; while ((k = fread(tmp, 1, sizeof tmp, f)) > 0) put(&b, tmp, k);
@@ -390,6 +407,15 @@ int main(int argc, char **argv) {
     /* spread big inputs over the threads, but never below the tier's minimum block (ratio) unless -b is given */
     size_t minb = (size_t)(tier == 1 ? 1 : tier == 2 ? 2 : 16) << 20;
     if (!bmb && n / T < bs) { size_t e = (n + T - 1) / T; bs = e > minb ? e : minb; }
+    /* balanced, no -b: on a 16 MB prefix, pick 8 MB vs 16 MB blocks (the winner of the two) for the whole file.
+       skipped when the user passed -b (golden uses -b 2). */
+    if (tier == 2 && !bmb && n > ((size_t)16 << 20) && (delim || is_texty(in, n))) {
+      size_t pn = (size_t)16 << 20;
+      if (delim) { while (pn < n && in[pn] != '\n') pn++; if (pn < n) pn++; }
+      size_t s8 = measure_enc(in, pn, (size_t)8 << 20, tier, delim, zl, T);
+      size_t s16 = measure_enc(in, pn, (size_t)16 << 20, tier, delim, zl, T);
+      if (s16 != (size_t)-1 && s8 != (size_t)-1 && s16 < s8) { bs = (size_t)16 << 20; bmb = 16; }
+    }
     size_t cap = n / (bs > 1 ? bs : 1) + 2, nb = 0, p = 0; blk_t *B = (blk_t *)calloc(cap + 1, sizeof(blk_t));
     while (p < n || nb == 0) {
       size_t e = p + bs < n ? p + bs : n;

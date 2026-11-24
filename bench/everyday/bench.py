@@ -48,6 +48,7 @@ def codecs(T):
         "7z-9":           (["sh", "-c", f"rm -f {{o}}.7z && 7z a -bd -bso0 -bsp0 -t7z -mx=9 -mmt={T} {{o}}.7z {{i}} && mv {{o}}.7z {{o}}"], ["sh", "-c", "7z e -bd -bso0 -bsp0 -t7z -so {o} > {r}"]),
         "xz-9":           (["sh", "-c", "xz -9 -T1 -c {i} > {o}"], ["sh", "-c", "xz -d -c {o} > {r}"]),
         "xz-9-T":         (["sh", "-c", f"xz -9 -T{T} -c {{i}} > {{o}}"], ["sh", "-c", f"xz -d -T{T} -c {{o}} > {{r}}"]),
+        "brotli-9":       (["brotli", "-f", "-q", "9", "-w", "24", "{i}", "-o", "{o}"], ["brotli", "-f", "-d", "{o}", "-o", "{r}"]),
         "brotli-11":      (["brotli", "-f", "-q", "11", "-w", "24", "{i}", "-o", "{o}"], ["brotli", "-f", "-d", "{o}", "-o", "{r}"]),
         "brotli-5":       (["brotli", "-f", "-q", "5", "{i}", "-o", "{o}"], ["brotli", "-f", "-d", "{o}", "-o", "{r}"]),
         "lz4":            (["lz4", "-q", "-f", "{i}", "{o}"], ["lz4", "-q", "-f", "-d", "{o}", "{r}"]),
