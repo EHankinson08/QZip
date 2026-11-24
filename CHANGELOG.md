@@ -2,8 +2,9 @@
 
 ## v1.0.0 (2026-11-24): first public release
 
-**Default engine: QZip-mcm**, a fork of Mathieu Chartier's mcm 0.84 with an adaptive CSV/TSV table model and
-three text contexts from QZip's x18 design (`src/engine_mcmfork/`).
+**Default engine: QZip's table and text models on an mcm fork.** The fork starts from Mathieu Chartier's mcm 0.84;
+the adaptive CSV/TSV table model and three text contexts from QZip's x18 design are ours (`src/engine_mcmfork/`).
+That's where the size gain comes from.
 * enwik9 136,854,237 B (1.24% smaller than mcm -x11, 1.11x its time, 6.2 GB RAM); enwik8 17,361,988 B.
 * CSVs 20-26% smaller than mcm and 1.65-3.8x smaller than xz -9e on public datasets.
 * Predictive router (`src/qzrouter.py`): one ~160 KB analysis, one encode, one verifying decode. Very wide CSVs
@@ -20,7 +21,7 @@ optional extra: `pip install -e ".[legacy]"`. `./run_local.sh` sets everything u
 **Web app:** local drag-and-drop UI on 127.0.0.1 (`qzip web`), no account or API key; large files run as
 background jobs with progress and cancel.
 
-**License:** GPL-3.0-or-later (the default engine is a fork of GPL mcm). Patent application pending (`PATENTS.md`).
+**License:** GPL-3.0-or-later (the default engine starts from a fork of GPL mcm). Patent application pending (`PATENTS.md`).
 
 **Removed:** the commercial edition and build targets, pricing/enterprise/dashboard pages, the S3 storage
 backend, the 2025 GPU/RL experiments, exploratory test scripts and internal review notes.

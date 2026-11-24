@@ -9,8 +9,8 @@ QZip's default compression engine (`src/engine_mcmfork/`, built as `src/native/q
   Copyright (C) 2013, Google Inc. Author: Mathieu Chartier
   GNU General Public License v3 or later (src/engine_mcmfork/COPYING)
 
-Every original mcm copyright and license header is kept unchanged. The QZip changes (2026, Elliott Hankinson) are
-listed in src/engine_mcmfork/QZIP_FORK.md; in short:
+Every original mcm copyright and license header is kept unchanged. The QZip changes (2026, Elliott Hankinson) — the
+table and text models that produce the size gains — are listed in src/engine_mcmfork/QZIP_FORK.md; in short:
   * QzCsv.hpp (new): an adaptive CSV/TSV tracker (delimiter and field count learned from coded bytes only);
   * table contexts (field index, byte/field above, previous field) and a field-indexed mixer select;
   * a new level -q (archive type kTypeCMQz) with three text contexts from QZip's x18 design;

@@ -18,6 +18,19 @@ machine. Get the file back with `.venv/bin/qzip decompress data.csv.qz -o restor
 
 <p align="center"><img src="docs/img/webapp.gif" width="80%" alt="QZip web app: drop a CSV, compress, download the verified .qz"></p>
 
+## What's ours
+
+Elliott Hankinson built the original QZip in 2025 (see [`docs/HISTORY_2025.md`](docs/HISTORY_2025.md)).
+The default engine starts from a fork of mcm, and the size gains come from our models on top:
+
+* Inside the fork: an adaptive CSV/TSV column tracker, column-aware contexts and mixer weights, numeric
+  profiles, and three text contexts taken from x18.
+* Our own engines, written from scratch: x18 (a clean-room context-mixing engine), qzs (a CSV/log model),
+  qzb and qzm. x18 and qzs run behind `--max`, and on files where the router predicts they win (for example
+  very wide CSVs).
+* The predictive router, the `.qz` container with sha256 round-trip verification and an xz fallback, the
+  local web app and the CLI, and the benchmarks in this repo.
+
 ## Why it matters
 
 Sizes in bytes, smaller is better. Every row is a byte-exact round trip; a `.qz` file adds a header of under 1 KB.
@@ -29,8 +42,8 @@ Sizes in bytes, smaller is better. Every row is a byte-exact round trip; a `.qz`
 | youth-dataset-long-form.csv (55.5 MB) | **1,435,856** | 1,798,461 | 3,482,548 | 3,743,251 | – |
 | enwik9 (Wikipedia, 1 GB) | **136,854,237** | 138,569,355 | – | – | – |
 
-* **Text:** 30–35% smaller than xz, zstd and brotli, and 1.0–1.2% smaller than mcm, the context-mixing compressor
-  it is built on, at 1.1× mcm's time.
+* **Text:** 30–35% smaller than xz, zstd and brotli, and 1.0–1.2% smaller than mcm (the context-mixing compressor
+  the default engine's fork starts from), at 1.1× mcm's time. The gain comes from our text models on top.
 * **CSVs:** 3–26% smaller than mcm (20–26% on youth, TRI, Panel and fndds) and 1.6–3.8× smaller than xz on public
   datasets ([`bench/LAUNCH_FACTS.md`](bench/LAUNCH_FACTS.md)), from a table model that learns the columns as it goes.
 * **Verified:** each result is decoded and sha256-checked before it is written. If that ever fails, QZip ships xz
@@ -44,8 +57,10 @@ and caveats in [`bench/LAUNCH_FACTS.md`](bench/LAUNCH_FACTS.md)); brotli on an 8
 machine). It is not a world record: cmix/nncp-class compressors are smaller and far slower. The default level
 needs ~6 GB of RAM; QZip drops the level on smaller machines.
 
-> Built on [mcm](https://github.com/mathieuchartier/mcm) by Mathieu Chartier (GPL-3.0-or-later). QZip is therefore
-> **GPL-3.0-or-later**; see [`NOTICE`](NOTICE). The "Q" is historical: there is no quantum computing involved.
+> The default engine starts from a fork of [mcm](https://github.com/mathieuchartier/mcm) by Mathieu Chartier
+> (GPL-3.0-or-later), with our own table and text models on top — that's where the CSV and text gains come from.
+> We also built x18, our own engine written from scratch. QZip is therefore **GPL-3.0-or-later**; see
+> [`NOTICE`](NOTICE). The "Q" is historical: there is no quantum computing involved.
 
 ### Web app details
 * `./run_local.sh` (or `pip install -e . && make native && qzip web`) starts two local processes: the API server
@@ -64,7 +79,7 @@ needs ~6 GB of RAM; QZip drops the level on smaller machines.
 | `qzip/` | CLI (`qzip`), web launcher, job runner, `.qz` container (`container.py`) |
 | `src/safe_compress.py` | the single verified entry point (encode → decode → sha256 → ship, else xz) |
 | `src/qzrouter.py`, `src/qzverify.py` | predictive router: picks one codec per file from a ~160 KB analysis |
-| `src/engine_mcmfork/` | **default engine**: the mcm fork (GPL), its notes and PC2 benchmarks |
+| `src/engine_mcmfork/` | **default engine**: our table and text models on an mcm fork (GPL), its notes and PC2 benchmarks |
 | `src/qzcore/` | QZip's own clean-room codecs: x18 `qzc2`, `qzs` (CSV/logs), `qzb` (fast BWT), `qzm` (NIfTI) |
 | `src/native/` | native build (`make native`): libbsc/libsais, stock mcm, lpaq1, qtyp, and the `qzmf` binary |
 | `charts/`, `bench/` | launch charts (`make_launch_charts.py`) and the facts sheet / end-to-end checks |
@@ -88,7 +103,7 @@ CLI files and web-app downloads are the same `.qz` container (a small JSON heade
 
 Modes (web UI drop-down, CLI `--mode`, API `mode`):
 * `auto` (default): the predictive router (`src/qzrouter.py`, objective "balanced"). Text, CSV, logs and binaries go
-  to the **QZip-mcm fork** (codec `qzmf`, level `-q11`, ~6 GB RAM; the level drops to fit `--ram-mb` / `QZIP_RAM_MB`,
+  to the **default engine** (codec `qzmf`: our table and text models on the mcm fork, level `-q11`, ~6 GB RAM; the level drops to fit `--ram-mb` / `QZIP_RAM_MB`,
   default 3/4 of RAM). Predicted exceptions, decided from a ~160 KB analysis with no trial encodes: CSVs wider than the
   fork's 256-field table model (e.g. hctsa, ~10,000 columns) go to x18 (`qzc2`, 17.6% smaller there); NIfTI to `qzm`;
   label maps to `qzb`; incompressible or tiny files are stored. One encode, one verifying decode.
@@ -109,11 +124,12 @@ benchmarked), QZip's own codecs in `src/qzcore/`, and the libbsc / mcm / lpaq1 h
 Tests: `pip install -e ".[test]" && pytest`. Tests of the 2025 modes skip unless the `[legacy]` extra is installed;
 set `QZIP_DATA_DIR` (showcase CSVs/logs) and `QZIP_ENWIK8` to run the data-dependent ones.
 
-## Default engine: QZip-mcm fork (24 Nov 2026)
+## Default engine: QZip's table and text models on an mcm fork (24 Nov 2026)
 
-`src/engine_mcmfork/` is a fork of mcm 0.84 (Mathieu Chartier, GPL-3.0-or-later; every original header kept). QZip
-added an adaptive CSV/TSV tracker with table contexts (field index, byte and value above in the same field, previous
-field) and a `-q` level that swaps three weak text contexts for ones from QZip's x18 design. Details and the A/B log:
+`src/engine_mcmfork/` starts from a fork of mcm 0.84 (Mathieu Chartier, GPL-3.0-or-later; every original header kept).
+The gains come from QZip's additions: an adaptive CSV/TSV tracker with table contexts (field index, byte and value
+above in the same field, previous field) and a `-q` level that swaps three weak text contexts for ones from QZip's
+x18 design. Details and the A/B log:
 [`src/engine_mcmfork/QZIP_FORK.md`](src/engine_mcmfork/QZIP_FORK.md), [`bench/RESULTS.md`](src/engine_mcmfork/bench/RESULTS.md).
 
 PC2 (i9-14900KF, shared machine, `nice 19` + `ionice -c3`, one job at a time, g++ 13.3), 23 Nov 2026. Every row is a
@@ -157,7 +173,7 @@ byte-exact round trip (cmp). Times are compress / decompress wall seconds, RAM i
 
 ## Architecture
 `src/safe_compress.py` is the single entry point used by the web app, API and CLI. It is a **check-only** layer:
-it runs one encoder (default `auto`: the predictive router `src/qzrouter.py`, usually the mcm fork `qzmf`; `fast`/`max`/`ultra`: the Oct-2025 engine, see `docs/HISTORY_2025.md`), decodes the result, compares
+it runs one encoder (default `auto`: the predictive router `src/qzrouter.py`, usually the default engine `qzmf` (our models on the mcm fork); `fast`/`max`/`ultra`: the Oct-2025 engine, see `docs/HISTORY_2025.md`), decodes the result, compares
 sha256, and only if that fails falls back to xz (zstd above 32 MiB). The container is JSON
 `{compressed_data, reconstruction_metadata, method, quantum_parameters{qzip:{orig_sha256, orig_size, decoder,
 mode, detected_type, chosen, route, fallback}}, ...}`; the `.qz` file stores it as a JSON header followed by the raw payload. The web UI shows the detected type and
@@ -175,8 +191,8 @@ The servers are not hardened for public exposure (open CORS, pickle job store, z
 
 ## Licensing
 
-QZip is licensed under the **GNU General Public License v3.0 or later** (`LICENSE`), because its default engine is a
-fork of mcm (GPL-3.0-or-later, Copyright (C) 2013 Google Inc., author Mathieu Chartier). See `NOTICE` and
+QZip is licensed under the **GNU General Public License v3.0 or later** (`LICENSE`), because the default engine
+starts from a fork of mcm (GPL-3.0-or-later, Copyright (C) 2013 Google Inc., author Mathieu Chartier). See `NOTICE` and
 `src/engine_mcmfork/QZIP_FORK.md`. QZip-authored code is Copyright 2026 Elliott Hankinson. Third-party code
 (libbsc/libsais: Apache-2.0; stock mcm and lpaq1: GPL) is listed in `THIRD_PARTY_NOTICES.md`. Patent application:
 U.S. App. No. 19/318,010 (pending); see `PATENTS.md`.
