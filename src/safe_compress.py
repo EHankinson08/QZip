@@ -15,6 +15,9 @@ Modes
   auto-max (CLI --max)    same analysis, objective "max": smallest output from QZip's own codecs (qzc2 = x18 CM /
                           qzs CSV+log / qzm NIfTI / stored); ~3x slower than auto on text
   auto-fast               same analysis, picks among the fast codecs (qzb word+BWT on/off, zstd, stored)
+  tier-fast (CLI --fast)  everyday fast tier: qze -1 (CSV column transform + zstd, parallel blocks)
+  tier-balanced (--balanced) everyday balanced tier: qze -2 (CSV transform + BWT / zstd -19, parallel blocks)
+  smart (CLI --smart)     picks fast / balanced / strong from the file size and type and --goal (qzrouter.smart_tier)
   codec:NAME              override: skip the prediction and use NAME (see qzrouter.CODECS)
   fast                    Oct-2025 engine with the QZip router (src/qzip_routes.py), fast level
   max                     same router, max level (CM text modes: 4 x stock mcm -h11)
@@ -45,13 +48,17 @@ TEXT_METHOD = "text"
 ENGINE_METHODS = [LEGACY_METHOD, "hybrid_quantum", "adaptive_quantum", "quantum_superposition", "quantum_entanglement"]
 DEFAULT_MODE = "auto"
 AUTO_METHOD = "qzrouter"
-AUTO_OBJECTIVE = {"auto": "balanced", "auto-max": "max", "auto-fast": "fast"}
-LEVEL_OF = {"fast": "fast", "auto": "fast", "auto-max": "fast", "auto-fast": "fast", "max": "max", "ultra": "ultra", "legacy": None}
+AUTO_OBJECTIVE = {"auto": "balanced", "auto-max": "max", "auto-fast": "fast",
+                  "tier-fast": "tier-fast", "tier-balanced": "tier-balanced", "smart": "smart"}
+LEVEL_OF = {"tier-fast": "fast", "tier-balanced": "fast", "smart": "fast", "fast": "fast", "auto": "fast", "auto-max": "fast", "auto-fast": "fast", "max": "max", "ultra": "ultra", "legacy": None}
 MODES = {   # mode -> the single encoder it runs
     "fast":   [LEGACY_METHOD],
     "auto":   [AUTO_METHOD, LEGACY_METHOD],   # legacy only runs if the router could not encode
     "auto-max": [AUTO_METHOD, LEGACY_METHOD],
     "auto-fast": [AUTO_METHOD, LEGACY_METHOD],
+    "tier-fast": [AUTO_METHOD],       # everyday tiers (CLI --fast / --balanced / --smart); --strong = auto
+    "tier-balanced": [AUTO_METHOD],
+    "smart": [AUTO_METHOD],
     "max":    [LEGACY_METHOD],
     "ultra":  [LEGACY_METHOD],
     "legacy": [LEGACY_METHOD],

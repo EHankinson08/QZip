@@ -11,8 +11,25 @@
 #include <vector>
 #include <string>
 #include <algorithm>
+// portability (QZip): madvise / huge pages only where the OS has them; rdtsc only for -DQZPROF profiling builds;
+// Windows has no aligned_alloc (_aligned_malloc; the hash table is never freed).
+#if defined(__linux__) || defined(__APPLE__)
 #include <sys/mman.h>
+#endif
+#ifndef MADV_HUGEPAGE
+#define QZ_MADVISE(p,n) ((void)0)
+#else
+#define QZ_MADVISE(p,n) madvise(p,n,MADV_HUGEPAGE)
+#endif
+#ifdef _WIN32
+#include <malloc.h>
+#define QZ_ALIGNED_ALLOC(a,b) _aligned_malloc(b,a)
+#else
+#define QZ_ALIGNED_ALLOC(a,b) aligned_alloc(a,b)
+#endif
+#ifdef QZPROF
 #include <x86intrin.h>
+#endif
 #ifdef QZPROF
 static unsigned long long PT[10]; static unsigned long long pt0;
 #define TS() (pt0=__rdtsc())
@@ -103,13 +120,13 @@ struct Coder { U32 x1=0,x2=0xffffffff,x=0; std::vector<U8>*out; const U8*in; siz
 
 static inline U64 hh(U64 a,U64 b){ U64 h=(a+0x9E3779B97F4A7C15ULL)*0xD6E8FEB86659FD93ULL; h^=h>>32; h=(h+b)*0x9E3779B97F4A7C15ULL; h^=h>>29; return h; }
 
-static void thp(void*p,size_t n){ if(!envi("QZ_THP",1)||n<(4u<<20)) return; uintptr_t a=((uintptr_t)p+(1u<<21)-1)&~(uintptr_t)((1u<<21)-1), e=((uintptr_t)p+n)&~(uintptr_t)((1u<<21)-1); if(e>a) madvise((void*)a,e-a,MADV_HUGEPAGE); }
+static void thp(void*p,size_t n){ if(!envi("QZ_THP",1)||n<(4u<<20)) return; uintptr_t a=((uintptr_t)p+(1u<<21)-1)&~(uintptr_t)((1u<<21)-1), e=((uintptr_t)p+n)&~(uintptr_t)((1u<<21)-1); if(e>a) QZ_MADVISE((void*)a,e-a); }
 template<class V> static void thpv(V&v){ thp(v.data(),v.size()*sizeof(v[0])); }
 // ---------------- hashed context table ----------------
 struct Slot { U8 chk; U8 st[15]; };
 struct HTable { Slot *t; U64 mask;
-  void init(int bits){ size_t n=(size_t)1<<bits; size_t sz=n*sizeof(Slot); t=(Slot*)aligned_alloc(1<<21,sz<(1u<<21)?(1u<<21):sz); if(!t){fprintf(stderr,"oom\n");exit(1);}
-    if(envi("QZ_THP",1)) madvise(t,sz,MADV_HUGEPAGE); memset(t,0,sz); mask=(n/4)-1; }
+  void init(int bits){ size_t n=(size_t)1<<bits; size_t sz=n*sizeof(Slot); t=(Slot*)QZ_ALIGNED_ALLOC(1<<21,sz<(1u<<21)?(1u<<21):sz); if(!t){fprintf(stderr,"oom\n");exit(1);}
+    if(envi("QZ_THP",1)) QZ_MADVISE(t,sz); memset(t,0,sz); mask=(n/4)-1; }
   inline Slot* bucket(U64 h){ return t+((h>>8)&mask)*4; }
   inline U8* find(U64 h){ Slot*b=bucket(h); U8 c=(U8)(h>>56); 
     for(int i=0;i<4;i++) if(b[i].chk==c) return b[i].st;

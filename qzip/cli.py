@@ -14,6 +14,10 @@
         fast            routed by file type to the measured-best method (text: QWRT+libbsc; CSV: qtyp; ...)
         max / ultra     same router; text and logs use the CM text mode (4 x stock mcm -h11 / 2 x mcm -x11)
         legacy          original Oct-2025 routes only ("QZip today")
+        --fast          everyday fast tier (qze -1): CSV column transform + zstd, parallel blocks; zstd-class speed
+        --balanced      everyday balanced tier (qze -2): CSV transform + BWT / zstd -19; xz-class size or better, much faster
+        --strong        = the default engine (mcm fork + QZip table/text models)
+        --smart [--goal everyday|open-often|archive] [--time-budget S]   picks the tier from size / type / goal
   qzip decompress <file.qz|file.qc.gz|file.qc> [-o out]
   qzip verify <file.qz> [original]
   qzip info <file.qz>                     show header: method, size, sha256, original name, source path
@@ -33,6 +37,17 @@ def _mode(a):
         os.environ["QZIP_VERIFY"] = "0"
     if getattr(a, "codec", None):
         return f"codec:{a.codec}"
+    if getattr(a, "goal", None):
+        os.environ["QZIP_GOAL"] = a.goal
+    if getattr(a, "time_budget", None):
+        os.environ["QZIP_TIME_BUDGET"] = str(a.time_budget)
+    if getattr(a, "threads", None):
+        os.environ["QZIP_TIER_THREADS"] = str(a.threads)
+    tiers = [t for t in ("fast", "balanced", "strong", "smart") if getattr(a, t, False)]
+    if len(tiers) > 1 or (tiers and (getattr(a, "max", False) or a.mode != DEFAULT_MODE)):
+        sys.exit("qzip: pick one of --fast / --balanced / --strong / --smart / --max / --mode")
+    if tiers:
+        return {"fast": "tier-fast", "balanced": "tier-balanced", "strong": "auto", "smart": "smart"}[tiers[0]]
     if getattr(a, "max", False):
         if a.mode not in (DEFAULT_MODE, "auto-max"):
             sys.exit("qzip: --max is --mode auto-max; do not combine it with another --mode")
@@ -48,6 +63,16 @@ def _write(path, data, force):
         sys.exit(f"qzip: {path} exists (use -f to overwrite)")
     with open(path, "wb") as f:
         f.write(data)
+
+def _tier_args(p):
+    g = p.add_argument_group("everyday tiers")
+    g.add_argument("--fast", action="store_true", help="fast tier: zstd-class speed, CSV column transform + zstd")
+    g.add_argument("--balanced", action="store_true", help="balanced tier: xz-class size or better at 50x+ xz speed")
+    g.add_argument("--strong", action="store_true", help="strong tier = the default engine (mcm fork + QZip models)")
+    g.add_argument("--smart", action="store_true", help="pick the tier from file size/type and --goal")
+    g.add_argument("--goal", choices=("everyday", "open-often", "archive"), help="for --smart (default everyday)")
+    g.add_argument("--time-budget", type=float, help="--smart: seconds allowed for compress + decompress (default 10)")
+    g.add_argument("--threads", type=int, help="threads for the tiers (default min(8, idle cores))")
 
 def cmd_compress(a):
     from qzip.core import compress_bytes, dump_container
@@ -208,6 +233,7 @@ def main(argv=None):
     p = sub.add_parser("compress"); p.add_argument("file"); p.add_argument("-o", "--output")
     p.add_argument("--mode", choices=MODES, default=DEFAULT_MODE); p.add_argument("-f", "--force", action="store_true")
     p.add_argument("--max", action="store_true", help="= --mode auto-max: x18 / qzs, smallest, slowest")
+    _tier_args(p)
     p.add_argument("--codec", choices=CODECS, help="override the predicted codec"); p.add_argument("--ram-mb", type=int)
     p.add_argument("--no-verify", action="store_true", help="skip the sample check of uncertain picks (src/qzverify.py)")
     p.add_argument("-v", "--verbose", action="store_true"); p.set_defaults(fn=cmd_compress)
@@ -217,6 +243,7 @@ def main(argv=None):
     p = sub.add_parser("info", help="show .qz header fields (name, source path, sha256)"); p.add_argument("file"); p.set_defaults(fn=cmd_info)
     p = sub.add_parser("bench"); p.add_argument("file"); p.add_argument("--mode", choices=MODES, default=DEFAULT_MODE)
     p.add_argument("--max", action="store_true", help="= --mode auto-max")
+    _tier_args(p)
     p.add_argument("--codec", choices=CODECS); p.add_argument("--ram-mb", type=int); p.add_argument("--no-verify", action="store_true")
     p.set_defaults(fn=cmd_bench)
     p = sub.add_parser("web"); p.add_argument("--host", default=os.getenv("QZIP_WEB_HOST", "127.0.0.1"))

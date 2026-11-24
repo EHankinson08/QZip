@@ -32,7 +32,16 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 BIN = os.environ.get("QZCORE_BIN", os.path.join(HERE, "qzcore"))
 MB = 1 << 20
 QZMF_BIN = os.environ.get("QZMF_BIN", os.path.join(HERE, "native", "qzmf"))   # GPL mcm fork (src/engine_mcmfork)
-CODECS = ("qzmf", "qzc2", "qzc2_text", "qzc2_lean", "qzc2_text_lean", "qzs", "qzm", "qzb", "qzb_w0", "zstd", "xz", "stored")
+_EXE = ".exe" if os.name == "nt" else ""
+QZE_BIN = os.environ.get("QZE_BIN", os.path.join(HERE, "native", "qze" + _EXE))   # everyday tiers (src/native/everyday)
+CODECS = ("qzmf", "qzc2", "qzc2_text", "qzc2_lean", "qzc2_text_lean", "qzs", "qzm", "qzb", "qzb_w0", "zstd", "xz", "stored",
+          "qze_fast", "qze_balanced", "qzpar")
+# Everyday tiers (bench/everyday/RESULTS.md):
+#   qze_fast      CSV column transform + zstd, block-parallel: zstd-class speed, smaller than zstd -3 on every file tested
+#   qze_balanced  CSV column transform + libbsc BWT (text) / zstd -19 (binary), block-parallel: xz-class or better size,
+#                 50-100x xz's compression speed
+#   qzpar         the strong engine (qzmf) on T chunks in parallel, memory level sized to the RAM budget
+TIERS = ("fast", "balanced", "strong")
 FAST = ("qzb", "qzb_w0", "stored")   # zstd -19 / xz -9 are 10-100x slower than qzb: override only
 
 _COMPRESSED = (b"\x1f\x8b", b"\xfd7zXZ\x00", b"PK\x03\x04", b"BZh", b"\x28\xb5\x2f\xfd", b"7z\xbc\xaf\x27\x1c",
@@ -227,13 +236,50 @@ def qzc2_ram_mb(n, cap_mb=12288, prose=False):
         hb -= 1
     return ((16 << hb) + fixed) // MB
 
+# measured MB/s per tier on the box (8 threads; bench/everyday/RESULTS.md), (compress, decompress), conservative
+TIER_SPEED = {"fast": {"csv": (200, 400), "text": (250, 400), "binary": (250, 500)},
+              "balanced": {"csv": (40, 80), "text": (60, 80), "binary": (8, 300)},
+              "strong": {"csv": (2.5, 2.5), "text": (1.5, 1.5), "binary": (1.5, 1.5)}}
+GOALS = ("everyday", "open-often", "archive")
+
+def smart_tier(f, goal=None, budget_s=None, ram_mb=None):
+    """Pick a tier from the file analysis and a user goal (CLI --goal, env QZIP_GOAL):
+      open-often  files read or sent often: the fast tier (decompression >= 400 MB/s), whatever the size
+      archive     smallest output: strong (the default engine) unless its estimated time is above 10x the budget
+      everyday    (default) the smallest tier whose estimated compress + decompress time fits the budget
+                  (QZIP_TIME_BUDGET seconds, default 10): small files get strong, mid-size balanced, huge fast.
+    Returns (tier, reason)."""
+    goal = goal or os.environ.get("QZIP_GOAL", "everyday")
+    budget = float(budget_s or os.environ.get("QZIP_TIME_BUDGET", "10"))
+    k, mb = f["kind"], f["size"] / 1e6
+    cls = "csv" if k in ("csv", "log") else ("text" if k == "text" else "binary")
+    est = {t: mb / TIER_SPEED[t][cls][0] + mb / TIER_SPEED[t][cls][1] for t in TIERS}
+    if goal == "open-often":
+        return "fast", f"goal open-often: fast tier (est. {est['fast']:.2f} s round trip)"
+    lim = budget * (10 if goal == "archive" else 1)
+    for t in ("strong", "balanced", "fast"):
+        if est[t] <= lim:
+            return t, f"goal {goal}: {t} tier fits {lim:g} s (est. {est[t]:.1f} s for {mb:.1f} MB {cls})"
+    return "fast", f"goal {goal}: nothing fits {lim:g} s, fast tier (est. {est['fast']:.1f} s)"
+
 def predict(f, objective="max", ram_mb=None):
-    """Return (codec, reason). objective: 'balanced' (default), 'max' (smallest) or 'fast'."""
+    """Return (codec, reason). objective: 'balanced' (default = strong tier), 'max' (smallest), 'fast',
+    'tier-fast' / 'tier-balanced' (everyday tiers) or 'smart' (picks a tier, see smart_tier)."""
     k, n = f["kind"], f["size"]
     if n < 64:
         return "stored", "tiny input"
     if k == "incompressible":
         return "stored", f"already compressed ({f['magic'] or 'entropy %.2f b/B, zlib trial %.3f' % (f['h0'], f['trial'])})"
+    if objective == "tier-fast":
+        return "qze_fast", f"{k}: fast tier (CSV column transform + zstd, parallel blocks)"
+    if objective == "tier-balanced":
+        return "qze_balanced", f"{k}: balanced tier (CSV column transform + BWT / zstd -19, parallel blocks)"
+    if objective == "smart":
+        tier, why = smart_tier(f, ram_mb=ram_mb)
+        if tier == "strong":
+            codec, why2 = predict(f, "balanced", ram_mb)
+            return codec, f"{why} -> {why2}"
+        return predict(f, "tier-" + tier, ram_mb)[0], why
     if objective == "fast":
         if k in ("medical", "binary", "image"):
             return "qzb_w0", f"{k}: BWT without word transform"
@@ -363,7 +409,28 @@ def qzmf_decode(blob):
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
+def _qze(args, data):
+    if not os.path.exists(QZE_BIN):
+        raise RuntimeError(f"qze binary {QZE_BIN} missing: run make native")
+    r = subprocess.run([QZE_BIN] + args + ["-", "-"], input=bytes(data), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if r.returncode:
+        raise RuntimeError("qze failed: " + r.stderr.decode(errors="replace")[-300:])
+    return r.stdout
+
+def _tier_threads():
+    v = os.environ.get("QZIP_TIER_THREADS", "").strip()
+    return int(v) if v.isdigit() and int(v) > 0 else min(8, free_cores())
+
 def encode(codec, data, ram_mb=None):
+    if codec in ("qze_fast", "qze_balanced"):
+        return _qze(["c", "-1" if codec == "qze_fast" else "-2", "-T", str(_tier_threads())], data)
+    if codec == "qzpar":
+        try:
+            from src import qzpar
+        except ImportError:
+            import qzpar
+        budget = ram_mb or int(os.environ.get("QZIP_RAM_MB", "0")) or phys_ram_mb() * 3 // 4
+        return qzpar.compress(bytes(data), _tier_threads(), budget)[0]
     if codec == "qzmf":
         return qzmf_encode(bytes(data), ram_mb)
     if codec == "stored":
@@ -394,9 +461,18 @@ def encode(codec, data, ram_mb=None):
     raise ValueError(f"unknown codec {codec!r}; choose from {CODECS}")
 
 METHOD = {"qzmf": "qzmf", "qzc2": "qzc2", "qzc2_text": "qzc2", "qzc2_lean": "qzc2", "qzc2_text_lean": "qzc2", "qzs": "qzs", "qzm": "qzm", "qzb": "qzb", "qzb_w0": "qzb",
-          "zstd": "stored_zstd", "xz": "stored_xz", "stored": "stored"}
+          "zstd": "stored_zstd", "xz": "stored_xz", "stored": "stored",
+          "qze_fast": "qze", "qze_balanced": "qze", "qzpar": "qzpar"}
 
 def decode(method, blob):
+    if method == "qze":
+        return _qze(["d", "-T", str(_tier_threads())], blob)
+    if method == "qzpar":
+        try:
+            from src import qzpar
+        except ImportError:
+            import qzpar
+        return qzpar.decompress(bytes(blob), _tier_threads())
     if method == "qzmf":
         return qzmf_decode(blob)
     if method == "qzc2":
@@ -409,7 +485,7 @@ def decode(method, blob):
 
 def register(R):
     """Hook the qzcore decoders into src/qzip_routes' registry (stored/xz/zstd decoders already exist there)."""
-    for m in ("qzmf", "qzc2", "qzb", "qzs", "qzm"):
+    for m in ("qzmf", "qzc2", "qzb", "qzs", "qzm", "qze", "qzpar"):
         R.register_decoder(m, lambda b, m=m: decode(m, b))
 
 def compress(data, objective="balanced", codec=None, ram_mb=None, verify=None):
@@ -425,7 +501,7 @@ def compress(data, objective="balanced", codec=None, ram_mb=None, verify=None):
     else:
         codec, why = predict(f, objective, ram_mb)
         if verify is None:
-            verify = os.environ.get("QZIP_VERIFY", "1") not in ("", "0")
+            verify = os.environ.get("QZIP_VERIFY", "1") not in ("", "0") and codec not in ("qze_fast", "qze_balanced", "qzpar")
         if verify:
             try:
                 from src import qzverify as V

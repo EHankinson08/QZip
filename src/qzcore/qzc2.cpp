@@ -49,7 +49,15 @@ static void big_free(void*p,size_t bytes){
 #endif
 }
 template<class T> static T* big_array(size_t n){ return (T*)big_alloc(n*sizeof(T)); }
-static void* aligned_zalloc(size_t bytes){ bytes=(bytes+63)&~(size_t)63; void*p=aligned_alloc(64,bytes); if(!p){fprintf(stderr,"oom\n");exit(1);} memset(p,0,bytes); return p; }
+#ifdef _WIN32
+#include <malloc.h>
+static inline void afree(void*p){ _aligned_free(p); }   // Windows has no aligned_alloc; _aligned_malloc needs _aligned_free
+#define QZ_ALIGNED_ALLOC(a,b) _aligned_malloc(b,a)
+#else
+static inline void afree(void*p){ free(p); }
+#define QZ_ALIGNED_ALLOC(a,b) aligned_alloc(a,b)
+#endif
+static void* aligned_zalloc(size_t bytes){ bytes=(bytes+63)&~(size_t)63; void*p=QZ_ALIGNED_ALLOC(64,bytes); if(!p){fprintf(stderr,"oom\n");exit(1);} memset(p,0,bytes); return p; }
 
 // ---------------- logistic tables ----------------
 static short SQ[4096]; static short STR[4096]; static int STR32[4096]; // STR32: int copy of STR for AVX2 gathers
@@ -95,8 +103,8 @@ struct SMap { // context -> p (22 bit) + count (10 bit)
   U32 *t=nullptr; size_t n=0; int lim; U32 *cur=nullptr; bool own=true;
   void init(size_t nn,int limit,bool states=false){ n=nn; t=(U32*)aligned_zalloc(n*4); lim=limit;
     for(size_t i=0;i<n;i++){ U32 p=1u<<21; if(states){ int s=i&255; if(s<NSTATES){ p=(U32)(((SN1[s]*2+1)<<22)/(SN0[s]*2+SN1[s]*2+2)); } } t[i]=p<<10; } }
-  ~SMap(){ if(own) free(t); }
-  void alias(const SMap&o){ if(own) free(t); t=o.t; n=o.n; lim=o.lim; own=false; }
+  ~SMap(){ if(own) afree(t); }
+  void alias(const SMap&o){ if(own) afree(t); t=o.t; n=o.n; lim=o.lim; own=false; }
   inline int p(size_t cx){ cur=&t[cx]; return (int)(*cur>>20); }
   // REC[n] <= 65536/1.6, so p moves at most 62.5% toward the target and never leaves [0, 2^22): no clamp needed
   static inline void upd_at(U32*e,int y,int lim){ U32 v=*e; int n=v&1023; int p=(int)(v>>10); int tg=y<<22; p+=(int)(((I64)(tg-p)*REC[n])>>16);
@@ -154,8 +162,8 @@ struct Mixer {
   struct Set { int *w; int *cw; int pr; int lr; };
   std::vector<Set> S;
   void init(int ninputs){ n=(ninputs+7)&~7; x=(int*)aligned_zalloc((size_t)n*4); }
-  ~Mixer(){ free(x); if(own) for(auto&s:S) free(s.w); }
-  void alias(const Mixer&o){ if(own) for(auto&s:S) free(s.w); S=o.S; for(auto&s:S){ s.cw=s.w; s.pr=2048; } own=false; }
+  ~Mixer(){ afree(x); if(own) for(auto&s:S) afree(s.w); }
+  void alias(const Mixer&o){ if(own) for(auto&s:S) afree(s.w); S=o.S; for(auto&s:S){ s.cw=s.w; s.pr=2048; } own=false; }
   void addset(int nsel,int lr,int initw){ Set s; s.w=(int*)aligned_zalloc((size_t)n*nsel*4); for(size_t i=0;i<(size_t)n*nsel;i++) s.w[i]=initw; s.lr=lr; s.cw=s.w; s.pr=2048; S.push_back(s); }
   inline void add(int v){ x[nx++]=v; }
   inline int mix(int k,int sel){ Set&s=S[k]; s.cw=s.w+(size_t)sel*n; int d=mix_dot(x,s.cw,n); s.pr=squash_c(d); return d; }
@@ -194,16 +202,19 @@ struct Mixer16 {
   struct Set { int16_t *w; int16_t *cw; int pr; int lr; };
   std::vector<Set> S;
   void init(int ninputs){ n=(ninputs+15)&~15; x=(int16_t*)aligned_zalloc((size_t)n*2); }
-  ~Mixer16(){ free(x); if(own) for(auto&s:S) free(s.w); }
-  void alias(const Mixer16&o){ if(own) for(auto&s:S) free(s.w); S=o.S; for(auto&s:S){ s.cw=s.w; s.pr=2048; } own=false; }
+  ~Mixer16(){ afree(x); if(own) for(auto&s:S) afree(s.w); }
+  void alias(const Mixer16&o){ if(own) for(auto&s:S) afree(s.w); S=o.S; for(auto&s:S){ s.cw=s.w; s.pr=2048; } own=false; }
   // initw is given in the int32 mixer's Q16 scale
   void addset(int nsel,int lr,int initw){ Set s; s.w=(int16_t*)aligned_zalloc((size_t)n*nsel*2); int16_t iw=(int16_t)(initw>>(16-qw)); for(size_t i=0;i<(size_t)n*nsel;i++) s.w[i]=iw; s.lr=lr; s.cw=s.w; s.pr=2048; S.push_back(s); }
   inline void add(int v){ x[nx++]=(int16_t)v; }
   inline int mix(int k,int sel){ Set&s=S[k]; s.cw=s.w+(size_t)sel*n; int d=mix16_dot(x,s.cw,n,qw); s.pr=squash_c(d); return d; }
   int gm=16; // learning-rate multiplier in 1/16 (16 = the set's own lr)
+  int met=0; // v6 bits 20-22: skip the whole first-layer update when every set's |error| (12-bit) is below met (7-set mixer only)
   inline void upd(int y){ const int16_t*xx=x; int nn=n;
 #ifdef __AVX2__
     if(S.size()==7){ upd_fused<7>(y); nx=0; return; }
+#else
+    if(S.size()==7 && met){ int mx=0; for(int k=0;k<7;k++){ int a=(y<<12)-S[k].pr; if(a<0)a=-a; if(a>mx)mx=a; } if(mx<met){ nx=0; return; } }
 #endif
     for(auto&s:S){ int e=(((y<<12)-s.pr)*s.lr*gm)>>(17-qw+4); if(e>32767)e=32767; if(e<-32767)e=-32767; mix16_train(xx,s.cw,nn,e); } nx=0; }
 #ifdef __AVX2__
@@ -215,7 +226,6 @@ struct Mixer16 {
       for(int k=0;k<K;k++) acc[k]=_mm256_add_epi32(acc[k],_mm256_srai_epi32(_mm256_madd_epi16(xv,_mm256_load_si256((const __m256i*)(w[k]+i))),4)); }
     for(int k=0;k<K;k++){ __m128i h=_mm_add_epi32(_mm256_castsi256_si128(acc[k]),_mm256_extracti128_si256(acc[k],1)); h=_mm_add_epi32(h,_mm_shuffle_epi32(h,0x4e)); h=_mm_add_epi32(h,_mm_shuffle_epi32(h,0xb1));
       int d=_mm_cvtsi128_si32(h)>>(qw-4); if(d>2047)d=2047; if(d<-2047)d=-2047; S[k].pr=squash_c(d); out[k]=d; } }
-  int met=0; // v6 bits 20-22: skip the whole first-layer update when every set's |error| (12-bit) is below met
   template<int K> inline void upd_fused(int y){
     if(met){ int mx=0; for(int k=0;k<K;k++){ int a=(y<<12)-S[k].pr; if(a<0)a=-a; if(a>mx)mx=a; } if(mx<met) return; }
     __m256i ev[K]; int16_t*w[K];
@@ -239,8 +249,8 @@ struct Mixer8 {
   struct Set { int8_t *w; int8_t *cw; int pr; int lr; };
   std::vector<Set> S;
   void init(int ninputs){ n=(ninputs+15)&~15; x=(int16_t*)aligned_zalloc((size_t)n*2); }
-  ~Mixer8(){ free(x); if(own) for(auto&s:S) free(s.w); }
-  void alias(const Mixer8&o){ if(own) for(auto&s:S) free(s.w); S=o.S; for(auto&s:S){ s.cw=s.w; s.pr=2048; } own=false; }
+  ~Mixer8(){ afree(x); if(own) for(auto&s:S) afree(s.w); }
+  void alias(const Mixer8&o){ if(own) for(auto&s:S) afree(s.w); S=o.S; for(auto&s:S){ s.cw=s.w; s.pr=2048; } own=false; }
   void addset(int nsel,int lr,int initw){ Set s; s.w=(int8_t*)aligned_zalloc((size_t)n*nsel); int8_t iw=(int8_t)(initw>>10); for(size_t i=0;i<(size_t)n*nsel;i++) s.w[i]=iw; s.lr=lr; s.cw=s.w; s.pr=2048; S.push_back(s); }
   inline void add(int v){ x[nx++]=(int16_t)v; }
   inline int mix(int k,int sel){ Set&s=S[k]; s.cw=s.w+(size_t)sel*n; __m256i acc=_mm256_setzero_si256();
@@ -343,7 +353,7 @@ struct Predictor {
   const U8 *role=nullptr; bool wrt=false; U8 rl[256];
   int codepend=0, escpend=0; U64 codeh=0; int wev=0, cev=0, cfl=0; /* cfl (v6 flag 512): 1 = byte inside a word code, 2 = right after one */ U64 lastw1=0, lastw1x=0, lastw1n=0, lastw1l=0;
   int prf=32768, hits=0, ml=0; U32 mi1=0, mi2=0; int mpend=0;
-  ~Predictor(){ F2.x=nullptr; if(!own) return; if(dt) big_free(dt,dt_bytes); free(smt); big_free(rt,rt_bytes); big_free(ind1,65536*2); big_free(ind2,(size_t)2<<tbits); big_free(wn,(size_t)4<<tbits); if(wn2) big_free(wn2,(size_t)4<<tbits); big_free(buf,buf_bytes);
+  ~Predictor(){ F2.x=nullptr; if(!own) return; if(dt) big_free(dt,dt_bytes); afree(smt); big_free(rt,rt_bytes); big_free(ind1,65536*2); big_free(ind2,(size_t)2<<tbits); big_free(wn,(size_t)4<<tbits); if(wn2) big_free(wn2,(size_t)4<<tbits); big_free(buf,buf_bytes);
     big_free(mt1,(size_t)4<<mbits); big_free(mt2,(size_t)4<<mbits); }
   void init(int hbits,int mb,int tb,size_t bufsize,const U8*r){
     mbits=mb; tbits=tb; wrt=(r!=nullptr); memset(pfs,0,sizeof pfs); memset(cfs,0,sizeof cfs); ht.init(hbits,(Q6>>5)&7); if(Q6&65536){ dt_bytes=(size_t)(1024+4*65536)*17*sizeof(Slot); dt=(Slot*)big_alloc(dt_bytes); } buf_bytes=bufsize+8; buf=big_array<U8>(buf_bytes);
@@ -366,7 +376,7 @@ struct Predictor {
     { const int ns[6]={(Q6&512)?768:256,2048,1024,2048,2048,128}; for(int k=0;k<6;k++) if(QSETS>>k&1) M.addset(ns[k],lr,iw); }
     if(QXS) M.addset(QXS==1? 4096 : 8192,lr,iw);
     if(nn){ M.addset(64*8,lr,iw); an.init(4096*64,7); }
-    int nf=(int)M.S.size(); F.init(nf+1); F.addset((Q6&512)?768:256,8,(1<<16)/8); F2.init(nf+1); free(F2.x); F2.x=F.x; F2.addset(2048,8,(1<<16)/8); // final mixers: lr 8, init 1/8 (tuned)
+    int nf=(int)M.S.size(); F.init(nf+1); F.addset((Q6&512)?768:256,8,(1<<16)/8); F2.init(nf+1); afree(F2.x); F2.x=F.x; F2.addset(2048,8,(1<<16)/8); // final mixers: lr 8, init 1/8 (tuned)
     a1.init(65536,APMR); a2.init(65536,APMR); a3.init(65536,APMR); if(Q6&2) a4.init(68*256,APMR); if(Q6&4) a5.init(65536,APMR); if(Q6&8192) a6.init(11*256*8,APMR); MLT=(Q6>>14)&3? 16<<((Q6>>14)&3) : 0; if(MLT) bsm.init(64*8,1023);
   }
   // extra head: share every learned table and the buffer with head `o`; private context state; segment starts at seg0
@@ -374,7 +384,7 @@ struct Predictor {
     nn=o.nn; mbits=o.mbits; tbits=o.tbits; nm=o.nm; own=false; dt=o.dt; segstart=seg0; seglen=seglen_; pos=seg0;
     ht.alias(o.ht); smt=o.smt; rt=o.rt; rmask=o.rmask; ind1=o.ind1; ind2=o.ind2; wn=o.wn; wn2=o.wn2; buf=o.buf; mt1=o.mt1; mt2=o.mt2;
     o0.alias(o.o0); o1d.alias(o.o1d); mm.alias(o.mm); for(int r=0;r<NRUN;r++) rsm[r].alias(o.rsm[r]);
-    M.init(o.M.n); M.alias(o.M); F.init(o.F.n); F.alias(o.F); F2.init(o.F2.n); free(F2.x); F2.x=F.x; F2.alias(o.F2); a1.alias(o.a1); a2.alias(o.a2); a3.alias(o.a3); if(nn) an.alias(o.an);
+    M.init(o.M.n); M.alias(o.M); F.init(o.F.n); F.alias(o.F); F2.init(o.F2.n); afree(F2.x); F2.x=F.x; F2.alias(o.F2); a1.alias(o.a1); a2.alias(o.a2); a3.alias(o.a3); if(nn) an.alias(o.an);
     for(int r=0;r<NRUN;r++) ract[r]=0;
     wcc=wc_cur(); compute_hashes(); lookup_slots(); }
   inline int mlb(){ if(mlen==0) return 0; if(mlen<16) return mlen; if(mlen<32) return 16+((mlen-16)>>2); if(mlen<64) return 20+((mlen-32)>>3); if(mlen<512) return 24+((mlen-64)>>6); return 31; }

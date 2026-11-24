@@ -27,10 +27,10 @@
 #include <mutex>
 #include <cassert>
 #include <ctime>
-#include <emmintrin.h>
+#include "SimdCompat.hpp"
 #include <fstream>
 #include <iostream>
-#include <mmintrin.h>
+// <mmintrin.h> comes via SimdCompat.hpp (emmintrin includes it)
 #include <ostream>
 #include <stdint.h>
 #include <sstream>

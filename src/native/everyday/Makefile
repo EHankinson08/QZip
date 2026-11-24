@@ -1,0 +1,27 @@
+# qze: QZip everyday tiers (fast / balanced). Portable: no -march, no intrinsics, no OpenMP needed.
+#   make            -> ./qze      (CC/CXX overridable, e.g. CC=aarch64-linux-gnu-gcc CXX=aarch64-linux-gnu-g++)
+CC     ?= cc
+CXX    ?= c++
+OPT    ?= -O3
+EXE    ?=
+CFLAGS += $(OPT) -DNDEBUG -DZSTD_DISABLE_ASM -DZSTD_LEGACY_SUPPORT=0 -w
+OBJ    ?= obj
+ZSRC   := $(wildcard zstd/common/*.c zstd/compress/*.c zstd/decompress/*.c)
+BSRC   := $(shell find ../libbsc -name '*.cpp')
+ZOBJ   := $(patsubst %.c,$(OBJ)/%.o,$(ZSRC))
+BOBJ   := $(patsubst ../libbsc/%.cpp,$(OBJ)/bsc/%.o,$(BSRC)) $(OBJ)/bsc/libsais.o
+LIBS   ?= -lpthread
+
+qze$(EXE): $(OBJ)/qze.o $(ZOBJ) $(BOBJ)
+	$(CXX) $(OPT) -o $@ $^ $(LIBS)
+$(OBJ)/qze.o: qze.c
+	@mkdir -p $(dir $@); $(CC) $(CFLAGS) -std=c11 -c $< -o $@
+$(OBJ)/zstd/%.o: zstd/%.c
+	@mkdir -p $(dir $@); $(CC) $(CFLAGS) -c $< -o $@
+$(OBJ)/bsc/libsais.o: ../libbsc/bwt/libsais/libsais.c
+	@mkdir -p $(dir $@); $(CC) $(CFLAGS) -c $< -o $@
+$(OBJ)/bsc/%.o: ../libbsc/%.cpp
+	@mkdir -p $(dir $@); $(CXX) $(CFLAGS) -c $< -o $@
+clean:
+	rm -rf $(OBJ) qze qze.exe
+.PHONY: clean

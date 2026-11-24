@@ -16,6 +16,10 @@
 #include <stdint.h>
 #include <sys/stat.h>
 #include <errno.h>
+#ifdef _WIN32
+#include <direct.h>
+#define mkdir(p,m) _mkdir(p)
+#endif
 #define MAXC 512
 #define MAXR 16
 typedef struct{unsigned char*b;size_t n,cap;}buf;

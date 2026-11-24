@@ -57,3 +57,10 @@ src/native/qzmf
 static/
 *.qz
 .pytest_cache/
+# everyday tiers (src/native/everyday) and cross / Windows builds
+src/native/qze
+src/native/everyday/qze
+src/native/everyday/obj*/
+*.exe
+src/qzcore/qzc2
+wheelhouse/

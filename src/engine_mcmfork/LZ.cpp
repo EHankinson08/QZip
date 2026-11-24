@@ -40,7 +40,7 @@
 #include "lzsse4.h"
 #endif
 
-#include <mmintrin.h>
+#include "SimdCompat.hpp"
 
 size_t LZ4::getMaxExpansion(size_t in_size) {
 #ifdef USE_LZ4
