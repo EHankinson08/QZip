@@ -7,7 +7,7 @@ or sha256 against the original), and every size includes all headers. "MB" = 10^
 `ionice -c3`, one benchmark at a time, single-threaded coders, g++ 13.3. Times are wall-clock seconds and carry a few
 percent of noise. **Dates:** 21–24 Nov 2026.
 **Sources:** `src/engine_mcmfork/bench/RESULTS.md` + `pc2_results.tsv` (fork, mcm), `src/qzcore/RESULTS.md`
-(x18, qzs, xz, zstd, qzb, libbsc). Charts: `charts/` (`python3 charts/make_launch_charts.py`).
+(x18, qzs, xz, zstd, qzb, libbsc). Charts: `docs/img/` (`python3 docs/img/make_launch_charts.py`).
 
 ## What QZip is (one line)
 A verified lossless compressor with a local drag-and-drop web app and CLI. Its default engine is a GPL fork of

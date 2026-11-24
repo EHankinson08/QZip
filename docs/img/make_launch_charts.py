@@ -2,7 +2,7 @@
 """Launch charts (PNG + SVG) for the README and posts. Every number is a measured, byte-exact round trip; sources:
 src/engine_mcmfork/bench/RESULTS.md + pc2_results.tsv (fork, mcm), src/qzcore/RESULTS.md (x18, qzs, xz, zstd, qzb,
 libbsc). Hardware: PC2, Intel i9-14900KF, shared machine, nice 19 + ionice -c3, one job at a time.
-Run: python3 charts/make_launch_charts.py  (needs matplotlib)."""
+Run: python3 docs/img/make_launch_charts.py  (needs matplotlib)."""
 from pathlib import Path
 import matplotlib
 matplotlib.use("Agg")
