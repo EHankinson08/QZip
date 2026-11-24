@@ -1,6 +1,6 @@
 # QZip benchmark detail: qzcore engines (`--max`)
 
-Moved from the README. Charts are in `docs/charts/` (reproduce with `python3 docs/charts/make_qzcore_charts.py`).
+Methodology summary and the other docs: [docs/README.md](README.md). Charts are in `docs/charts/` (reproduce with `python3 docs/charts/make_qzcore_charts.py`).
 
 ## qzcore engine results (PC2, 21–23 Nov 2026; now the `--max` option)
 
