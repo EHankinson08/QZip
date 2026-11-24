@@ -12,8 +12,10 @@ binaries); missing tools are skipped. Results append as JSON lines; bench/everyd
 import argparse, hashlib, json, os, platform, shlex, shutil, subprocess, sys, tempfile, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-QZE = os.environ.get("QZE_BIN", os.path.join(ROOT, "src", "native", "everyday", "qze"))
-QZMF = os.environ.get("QZMF_BIN", os.path.join(ROOT, "src", "native", "qzmf"))
+_X = ".exe" if os.name == "nt" else ""
+QZE = os.environ.get("QZE_BIN", os.path.join(ROOT, "src", "native", "qze" + _X))
+QZMF = os.environ.get("QZMF_BIN", os.path.join(ROOT, "src", "native", "qzmf" + _X))
+QZC2 = os.path.join(ROOT, "src", "qzcore", "qzc2" + _X)
 PY = sys.executable
 
 def codecs(T):
@@ -22,12 +24,17 @@ def codecs(T):
         # QZip tiers
         "qzip-fast":      ([QZE, "c", "-1", "-T", str(T), "{i}", "{o}"], [QZE, "d", "-T", str(T), "{o}", "{r}"]),
         "qzip-balanced":  ([QZE, "c", "-2", "-T", str(T), "{i}", "{o}"], [QZE, "d", "-T", str(T), "{o}", "{r}"]),
-        "qzip-strong":    ([QZMF, "-q11", "{i}", "{o}"], [QZMF, "d", "{o}", "{r}"]),
-        "qzip-strong-l10": ([QZMF, "-q10", "{i}", "{o}"], [QZMF, "d", "{o}", "{r}"]),
-        "qzip-strong-par": ([PY, os.path.join(ROOT, "src", "qzpar.py"), "c", "-T", str(T), "{i}", "{o}"],
+        # strong = the default engine (qzmf -q11 / -q10) through qzpar -T 1 (one chunk; qzpar handles qzmf's stored file
+        # name and adds a 57-byte header)
+        "qzip-strong":    ([PY, os.path.join(ROOT, "src", "qzpar.py"), "c", "-T", "1", "--level", "11", "{i}", "{o}"],
+                           [PY, os.path.join(ROOT, "src", "qzpar.py"), "d", "-T", "1", "{o}", "{r}"]),
+        "qzip-strong-l10": ([PY, os.path.join(ROOT, "src", "qzpar.py"), "c", "-T", "1", "--level", "10", "{i}", "{o}"],
+                            [PY, os.path.join(ROOT, "src", "qzpar.py"), "d", "-T", "1", "{o}", "{r}"]),
+        "qzip-strong-par": ([PY, os.path.join(ROOT, "src", "qzpar.py"), "c", "-T", str(T), "--ram-mb", "4096", "{i}", "{o}"],
                             [PY, os.path.join(ROOT, "src", "qzpar.py"), "d", "-T", str(T), "{o}", "{r}"]),
         "qzip-lowmem":    ([PY, os.path.join(ROOT, "src", "qzpar.py"), "c", "-T", "1", "--ram-mb", "512", "{i}", "{o}"],
                            [PY, os.path.join(ROOT, "src", "qzpar.py"), "d", "-T", "1", "{o}", "{r}"]),
+        "qzip-x18":       ([QZC2, "c", "{i}", "{o}", "-m", "4096"], [QZC2, "d", "{o}", "{r}"]),
         # references (single-thread unless -T)
         "zstd-3":         (["zstd", "-q", "-f", "-3", "-T1", "{i}", "-o", "{o}"], ["zstd", "-q", "-f", "-d", "{o}", "-o", "{r}"]),
         "zstd-3-T":       (["zstd", "-q", "-f", "-3", f"-T{T}", "{i}", "-o", "{o}"], ["zstd", "-q", "-f", "-d", "{o}", "-o", "{r}"]),

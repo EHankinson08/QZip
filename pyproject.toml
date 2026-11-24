@@ -31,10 +31,15 @@ test = ["pytest>=7"]
 qzip = "qzip.cli:main"
 
 [tool.setuptools]
-packages = ["qzip", "webapp", "src", "src.native", "src.candidates"]
+packages = ["qzip", "webapp", "src", "src.native", "src.candidates", "src.qzcore"]
 
-# QZip runs from a source checkout (`pip install -e .`): the native build needs the C/C++ trees in src/, and the web
-# app reads webapp/templates from the checkout. No package data is copied.
+# Source checkout (`pip install -e .`) builds the native programs with `make native`. Binary wheels (everyday branch,
+# cibuildwheel / MSYS2, see setup.py and .github/workflows/native-matrix.yml) run `make native ARCH=portable` during
+# the build and ship the programs below as package data (platform wheel, py3-none-<platform>).
+[tool.setuptools.package-data]
+"src.native" = ["qzmf", "qzmf.exe", "qze", "qze.exe", "qzcm", "qzcm.exe", "qtyp", "qtyp.exe", "qzlpaq", "qzlpaq.exe", "libqznative.so"]
+"src.qzcore" = ["qzc", "qzc.exe", "qzc2", "qzc2.exe", "qzb", "qzb.exe", "qtyp", "qtyp.exe", "qzs", "qzm"]
+"webapp" = ["templates/*"]
 
 [tool.pytest.ini_options]
 # CI runs the regression suite (tests/regression).

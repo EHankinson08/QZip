@@ -9,7 +9,8 @@ import os, sys, struct, subprocess, tempfile, shutil, hashlib
 from concurrent.futures import ThreadPoolExecutor
 TH = int(os.environ.get("QZCSV_THREADS", "8"))
 HERE = os.path.dirname(os.path.abspath(__file__))
-QZC = os.environ.get("QZC_BIN", os.path.join(HERE, "qzc")); QTYP = os.environ.get("QTYP_BIN", os.path.join(HERE, "qtyp"))
+_X = ".exe" if os.name == "nt" else ""
+QZC = os.environ.get("QZC_BIN", os.path.join(HERE, "qzc" + _X)); QTYP = os.environ.get("QTYP_BIN", os.path.join(HERE, "qtyp" + _X))
 
 def hbits_for(n):
     return 0  # 0 = qzc sizes its context table to the input (and free RAM); size is stored in the header

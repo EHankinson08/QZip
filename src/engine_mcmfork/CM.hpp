@@ -889,6 +889,7 @@ namespace cm {
       }
     }
 
+#if 0  // QZip: unused upstream stub (DPOptimalLeaves is never defined); GCC skips it, clang's two-phase lookup rejects it
     // Optimal leaf algorithm.
     uint64_t SolveOptimalLeaves(const uint64_t* cost) {
       // DP array [node][remain] = max leaf values
@@ -897,6 +898,7 @@ namespace cm {
       std::fill_n(total, kCount, -1);
       return DPOptimalLeaves(cost, total, 0, 64);
     }
+#endif
 
     int NextNibbleLeaf(int node, size_t next) {
       // 0

@@ -31,7 +31,7 @@ import math, os, re, shutil, subprocess, sys, tempfile, time, zlib
 HERE = os.path.dirname(os.path.abspath(__file__))
 BIN = os.environ.get("QZCORE_BIN", os.path.join(HERE, "qzcore"))
 MB = 1 << 20
-QZMF_BIN = os.environ.get("QZMF_BIN", os.path.join(HERE, "native", "qzmf"))   # GPL mcm fork (src/engine_mcmfork)
+QZMF_BIN = os.environ.get("QZMF_BIN", os.path.join(HERE, "native", "qzmf" + (".exe" if os.name == "nt" else "")))   # GPL mcm fork (src/engine_mcmfork)
 _EXE = ".exe" if os.name == "nt" else ""
 QZE_BIN = os.environ.get("QZE_BIN", os.path.join(HERE, "native", "qze" + _EXE))   # everyday tiers (src/native/everyday)
 CODECS = ("qzmf", "qzc2", "qzc2_text", "qzc2_lean", "qzc2_text_lean", "qzs", "qzm", "qzb", "qzb_w0", "zstd", "xz", "stored",
@@ -352,10 +352,14 @@ def _run(args, env=None):
         raise RuntimeError(f"{os.path.basename(args[0])} failed: {r.stderr.decode(errors='replace')[-300:]}")
 
 def _bin(name):
-    p = os.path.join(BIN, name)
+    """Command prefix (list) for a qzcore program. qzs / qzm are Python programs (bash wrappers on POSIX); on Windows
+    they run through this interpreter. Compiled programs get .exe on Windows."""
+    if name in ("qzs", "qzm") and os.name == "nt":
+        return [sys.executable, os.path.join(BIN, "qzcsv.py" if name == "qzs" else "qzmed.py")]
+    p = os.path.join(BIN, name + (_EXE if name not in ("qzs", "qzm") else ""))
     if not os.path.exists(p):
         raise RuntimeError(f"qzcore binary {p} missing: run src/qzcore/build.sh")
-    return p
+    return [p]
 
 def _with_files(data, fn):
     d = tempfile.mkdtemp(prefix="qzr_")
@@ -370,7 +374,7 @@ def _with_files(data, fn):
         shutil.rmtree(d, ignore_errors=True)
 
 def _env():
-    e = dict(os.environ); e.setdefault("QZPY", sys.executable); e.setdefault("QZC_BIN", os.path.join(BIN, "qzc"))
+    e = dict(os.environ); e.setdefault("QZPY", sys.executable); e.setdefault("QZC_BIN", os.path.join(BIN, "qzc" + _EXE))
     return e
 
 def _qzmf_bin():
@@ -451,13 +455,13 @@ def encode(codec, data, ram_mb=None):
         m = str(m)
         t = qzc2_threads(len(data))
         env = dict(os.environ, QZ_THREADS=str(t))
-        return _with_files(data, lambda i, o: _run([_bin("qzc2"), "c", i, o, "-m", m] + extra, env))
+        return _with_files(data, lambda i, o: _run(_bin("qzc2") + ["c", i, o, "-m", m] + extra, env))
     if codec in ("qzb", "qzb_w0"):
-        return _with_files(data, lambda i, o: _run([_bin("qzb"), "c", i, o, "1" if codec == "qzb" else "0"]))
+        return _with_files(data, lambda i, o: _run(_bin("qzb") + ["c", i, o, "1" if codec == "qzb" else "0"]))
     if codec == "qzs":
-        return _with_files(data, lambda i, o: _run([_bin("qzs"), "c", i, o], _env()))
+        return _with_files(data, lambda i, o: _run(_bin("qzs") + ["c", i, o], _env()))
     if codec == "qzm":
-        return _with_files(data, lambda i, o: _run([_bin("qzm"), "c", i, o], _env()))
+        return _with_files(data, lambda i, o: _run(_bin("qzm") + ["c", i, o], _env()))
     raise ValueError(f"unknown codec {codec!r}; choose from {CODECS}")
 
 METHOD = {"qzmf": "qzmf", "qzc2": "qzc2", "qzc2_text": "qzc2", "qzc2_lean": "qzc2", "qzc2_text_lean": "qzc2", "qzs": "qzs", "qzm": "qzm", "qzb": "qzb", "qzb_w0": "qzb",
@@ -476,11 +480,11 @@ def decode(method, blob):
     if method == "qzmf":
         return qzmf_decode(blob)
     if method == "qzc2":
-        return _with_files(blob, lambda i, o: _run([_bin("qzc2"), "d", i, o]))
+        return _with_files(blob, lambda i, o: _run(_bin("qzc2") + ["d", i, o]))
     if method == "qzb":
-        return _with_files(blob, lambda i, o: _run([_bin("qzb"), "d", i, o]))
+        return _with_files(blob, lambda i, o: _run(_bin("qzb") + ["d", i, o]))
     if method in ("qzs", "qzm"):
-        return _with_files(blob, lambda i, o: _run([_bin(method), "d", i, o], _env()))
+        return _with_files(blob, lambda i, o: _run(_bin(method) + ["d", i, o], _env()))
     raise KeyError(method)
 
 def register(R):

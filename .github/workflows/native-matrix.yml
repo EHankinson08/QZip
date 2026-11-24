@@ -1,0 +1,151 @@
+name: native-matrix
+
+# Native builds of every QZip engine (qzmf default engine, x18 qzc2, qzc/qzs, qzb, qze fast/balanced tiers) on
+# Linux x86-64 / arm64, macOS x86-64 / arm64 and Windows x86-64 (MSYS2 MinGW-w64), each with:
+#   * tests/portable/golden.py: byte-exact round trip AND compressed bytes identical to the Linux x86-64 reference
+#     (a file made on any platform decodes on every other),
+#   * tests/portable/smoke.py: Python API + CLI round trips for --fast / --balanced / --strong / --smart,
+#   * bench/everyday/bench.py: size, compress / decompress MB/s and peak RAM per tier vs zstd / xz / brotli on the runner,
+# then platform wheels (py3-none-<platform>) built with cibuildwheel (Linux, macOS) or pip wheel (Windows/MSYS2) and
+# smoke-tested from a clean install. Results are uploaded as artifacts and summarised on the run page.
+on:
+  push:
+    branches: [everyday]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x86_64,   os: ubuntu-24.04,     arch: x86-64-v3, shell: bash }
+          - { name: linux-arm64,    os: ubuntu-24.04-arm, arch: portable,  shell: bash }
+          - { name: macos-x86_64,   os: macos-15-intel,   arch: portable,  shell: bash }
+          - { name: macos-arm64,    os: macos-latest,     arch: portable,  shell: bash }
+          - { name: windows-x86_64, os: windows-latest,   arch: portable,  shell: 'msys2 {0}' }
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          path-type: inherit
+          install: >-
+            make
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-zstd
+            mingw-w64-x86_64-xz
+            mingw-w64-x86_64-brotli
+            unzip
+      - name: Reference tools (zstd / xz / brotli)
+        run: |
+          case "${{ runner.os }}" in
+            Linux) sudo apt-get update -q && sudo apt-get install -y -q zstd xz-utils brotli lz4 ;;
+            macOS) brew install zstd xz brotli lz4 || true ;;
+          esac
+          python -m pip install -q --upgrade pip psutil
+      - name: Build native engines
+        run: |
+          ${CC:-cc} --version | head -1 || true
+          make native ARCH=${{ matrix.arch }}
+          ls -l src/native src/qzcore | grep -E 'qz|qtyp|libqz' || true
+      - name: Golden streams (identical bytes on every platform) + round trips
+        run: python tests/portable/golden.py --json golden-${{ matrix.name }}.json
+      - name: Install QZip (default deps) and smoke-test every tier
+        run: |
+          python -m pip install -q -e .
+          python tests/portable/smoke.py
+      - name: Benchmark (speed / RAM / size per tier vs zstd / xz / brotli)
+        run: |
+          python - <<'PY'
+          import urllib.request, zipfile, io, os, sys
+          sys.path.insert(0, "tests/portable"); from golden import make_inputs
+          z = zipfile.ZipFile(io.BytesIO(urllib.request.urlopen("http://mattmahoney.net/dc/enwik8.zip", timeout=120).read()))
+          open("enwik8", "wb").write(z.read("enwik8"))
+          ins = make_inputs(); open("table.csv", "wb").write(ins["table.csv"] * 8)   # ~21 MB synthetic CSV
+          PY
+          python bench/everyday/bench.py --threads 4 --out bench-${{ matrix.name }}.jsonl \
+            --codecs qzip-fast,qzip-balanced,qzip-strong-par,qzip-lowmem,qzip-strong-l10,zstd-3,zstd-19-T,xz-9,brotli-5 \
+            table.csv enwik8
+          python bench/everyday/table.py bench-${{ matrix.name }}.jsonl >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results-${{ matrix.name }}
+          path: |
+            golden-${{ matrix.name }}.json
+            bench-${{ matrix.name }}.jsonl
+
+  wheels:
+    name: wheel ${{ matrix.name }}
+    needs: native
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x86_64,  os: ubuntu-24.04 }
+          - { name: linux-aarch64, os: ubuntu-24.04-arm }
+          - { name: macos-x86_64,  os: macos-15-intel }
+          - { name: macos-arm64,   os: macos-latest }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pypa/cibuildwheel@v2.22
+        env:
+          CIBW_BUILD: "cp311-*"
+          CIBW_SKIP: "*-musllinux_*"
+          CIBW_ARCHS: native
+          CIBW_ENVIRONMENT: "QZ_ARCH=portable"
+          CIBW_TEST_COMMAND: "python {project}/tests/portable/smoke.py"
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.name }}
+          path: wheelhouse/*.whl
+
+  wheel-windows:
+    name: wheel windows-x86_64
+    needs: native
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          path-type: inherit
+          install: make mingw-w64-x86_64-gcc
+      - name: Build wheel (static MinGW programs, no DLL dependencies)
+        run: |
+          make native ARCH=portable
+          python -m pip install -q build wheel
+          QZIP_SKIP_NATIVE_BUILD=1 python -m pip wheel . --no-deps -w wheelhouse
+      - name: Clean install + smoke test
+        run: |
+          python -m venv wtest
+          wtest/Scripts/python -m pip install -q wheelhouse/*.whl
+          cd tests/portable && ../../wtest/Scripts/python smoke.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-windows-x86_64
+          path: wheelhouse/*.whl

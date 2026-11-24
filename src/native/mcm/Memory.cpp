@@ -30,7 +30,7 @@
 #define USE_MALLOC 1
 
 #ifdef WIN32
-#include <Windows.h>
+#include <windows.h>
 #else
 // TODO: mmap
 #endif

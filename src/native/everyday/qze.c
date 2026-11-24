@@ -272,7 +272,9 @@ static void comp_block(job_t *j, size_t i) {
   if (C->tier == 1) {
     const uint8_t *src = b->raw; size_t sn = b->rawlen;
     if (C->delim && try_csv(b, C->delim, i == 0, 1, &b->t)) { src = b->t.b; sn = b->t.n; b->transform = 1; }
-    b->backend = B_ZSTD; if (!zstd_into(&b->c, src, sn, C->zlevel, 0)) b->err = 1;
+    /* default levels: 3 after the CSV transform (the transform already did the heavy lifting), 5 otherwise */
+    int lv = C->zlevel > 0 ? C->zlevel : (b->transform ? 3 : 5);
+    b->backend = B_ZSTD; if (!zstd_into(&b->c, src, sn, lv, 0)) b->err = 1;
     if (!b->err && b->c.n >= sn) { b->backend = B_STORED; b->c.n = 0; put(&b->c, src, sn); }
     return;
   }
@@ -335,7 +337,7 @@ int main(int argc, char **argv) {
   if (bsc_init(LIBBSC_FEATURE_FASTMODE) != LIBBSC_NO_ERROR) die("libbsc init");
   size_t n; uint8_t *in = readall(argv[argc - 2], &n);
   if (argv[1][0] == 'c') {
-    if (zl < 0) zl = tier == 1 ? 3 : 19;
+    if (zl < 0) zl = tier == 1 ? 0 : 19;   /* tier 1: 0 = per block (3 CSV-transformed, 5 other) */
     size_t bs = (size_t)(bmb > 0 ? bmb : (tier == 1 ? 4 : 32)) << 20;
     int delim = nocsv ? 0 : detect_delim(in, n);
     /* blocks: CSV cuts at line ends; at least T blocks when the input is big enough */

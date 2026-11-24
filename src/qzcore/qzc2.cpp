@@ -519,7 +519,7 @@ struct Predictor {
       fx[0]=(MixX)M.mix(0,c0+256*cfl); fx[1]=(MixX)M.mix(1,(c1<<3)+bp); fx[2]=(MixX)M.mix(2,(hh5<<5)|(ml>31?31:ml));
       fx[3]=(MixX)M.mix(3,(c2<<3)+bp); fx[4]=(MixX)M.mix(4,((mk&255)<<3)+bp); fx[5]=(MixX)M.mix(5,(conf<<3)+bp); nf=6;
     } else {
-      const int sel[6]={c0+256*cfl,(c1<<3)+bp,(hh5<<5)|(ml>31?31:ml),(c2<<3)+bp,((mk&255)<<3)+bp,(conf<<3)+bp};
+      const int sel[6]={c0+256*cfl,(c1<<3)+bp,(hh5<<5)|(ml>31?31:ml),(c2<<3)+bp,(int)(((mk&255)<<3)+bp),(conf<<3)+bp};
       for(int k=0;k<6;k++) if(QSETS>>k&1){ fx[nf]=(MixX)M.mix(nf,sel[k]); nf++; }
     }
     if(QXS){ U32 sel = QXS==1? (U32)(w1>>52) : (((U32)(wcc>>54))<<3)+bp; fx[nf]=(MixX)M.mix(nf,sel); nf++; }

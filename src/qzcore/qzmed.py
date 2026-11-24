@@ -10,7 +10,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import numpy as np, qmed
 
 D = os.path.dirname(os.path.abspath(__file__))
-QZC = os.environ.get("QZC_BIN", os.path.join(D, "qzc")); QZB = os.environ.get("QZB_BIN", os.path.join(D, "qzb"))
+_X = ".exe" if os.name == "nt" else ""
+QZC = os.environ.get("QZC_BIN", os.path.join(D, "qzc" + _X)); QZB = os.environ.get("QZB_BIN", os.path.join(D, "qzb" + _X))
 LEVEL = os.environ.get("QZMED_LEVEL", "0"); TOPK = int(os.environ.get("QZMED_TOPK", "2"))
 BE_QZB, BE_QZC = 7, 8
 qmed.BE_NAME[BE_QZB] = "qzb"; qmed.BE_NAME[BE_QZC] = "qzc"

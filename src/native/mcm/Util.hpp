@@ -27,10 +27,10 @@
 #include <mutex>
 #include <cassert>
 #include <ctime>
-#include <emmintrin.h>
+#include "SimdCompat.hpp"
 #include <fstream>
 #include <iostream>
-#include <mmintrin.h>
+#include "SimdCompat.hpp"
 #include <ostream>
 #include <stdint.h>
 #include <sstream>

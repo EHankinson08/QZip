@@ -1,0 +1,2 @@
+[console_scripts]
+qzip = qzip.cli:main

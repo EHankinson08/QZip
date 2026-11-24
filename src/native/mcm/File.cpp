@@ -98,7 +98,7 @@ std::string FileInfo::attrToStr(uint16_t attr) {
 }
 
 #ifdef WIN32
-#include <Windows.h>
+#include <windows.h>
 #pragma comment(lib, "User32.lib")
 
 void FileInfo::CreateDir(const std::string& name) {
