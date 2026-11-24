@@ -5,6 +5,15 @@ Talks to the local API server (webapp/api.py); every result is verified byte-exa
 from flask import Flask, request, jsonify, render_template, send_file, session, Response
 from flask_cors import CORS
 from qzip.container import unpack, strip_ext
+from qzip.identity import (
+    attach_identity,
+    clean_basename,
+    content_disposition,
+    download_name,
+    identity_from_container,
+    sanitize_source_path,
+    short_sha,
+)
 import os
 import json
 import hashlib
@@ -101,6 +110,54 @@ def delete_job_from_disk(job_id):
             logger.info(f"🗑️ Job {job_id} deleted from disk")
     except Exception as e:
         logger.error(f"Failed to delete job {job_id} from disk: {e}")
+
+
+_DOWNLOAD_NAME_LOCK = threading.Lock()
+_RESERVED_DOWNLOAD_NAMES = set()
+
+
+def _used_download_names():
+    used = set(_RESERVED_DOWNLOAD_NAMES)
+    for job in COMPRESSION_JOBS.values():
+        name = job.get("download_name")
+        if name:
+            used.add(name)
+    return used
+
+
+def claim_download_name(original_filename, source_path=None, orig_sha256=None, ext=".qz"):
+    """Session-unique download name. Unique basenames keep `report.csv.qz`; collisions add a parent folder or short sha256."""
+    with _DOWNLOAD_NAME_LOCK:
+        name = download_name(
+            original_filename,
+            source_path=source_path,
+            orig_sha256=orig_sha256,
+            used_names=_used_download_names(),
+            ext=ext,
+        )
+        _RESERVED_DOWNLOAD_NAMES.add(name)
+        return name
+
+
+def attachment_response(data_or_path, filename, mimetype="application/octet-stream", as_file=False):
+    """send_file / Response with RFC 5987 Content-Disposition."""
+    if as_file:
+        rv = send_file(data_or_path, as_attachment=True, download_name=filename, mimetype=mimetype)
+    else:
+        rv = Response(data_or_path, mimetype=mimetype)
+        rv.headers["Content-Length"] = str(len(data_or_path) if hasattr(data_or_path, "__len__") else 0)
+    rv.headers["Content-Disposition"] = content_disposition(filename)
+    return rv
+
+
+def request_source_path(file_storage, form_key="source_path"):
+    """Relative path from the form (preferred) or the multipart filename."""
+    form_path = request.form.get(form_key) if request and request.form else None
+    raw = form_path or (file_storage.filename if file_storage is not None else None)
+    base = clean_basename(file_storage.filename if file_storage is not None else None) or clean_basename(raw) or "upload.bin"
+    rel = sanitize_source_path(raw, basename=base)
+    return base, rel
+
 
 # Create directories
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
@@ -294,7 +351,7 @@ def compress_file():
         from werkzeug.utils import secure_filename
         from qzip.jobs import get_manager, compress_timeout_sec
 
-        original_filename = file.filename
+        original_filename, source_path = request_source_path(file)
         safe_name = secure_filename(original_filename) or 'upload.bin'
         mgr = get_manager(
             upload_dir=app.config['UPLOAD_FOLDER'],
@@ -329,9 +386,11 @@ def compress_file():
             mode=method,
             heartbeat_required=is_async,
             job_id=job_id,
+            source_path=source_path,
         )
         ACTIVE_COMPRESSIONS[job_id] = {
             'filename': original_filename,
+            'source_path': source_path,
             'original_size': original_size,
             'status': 'starting',
             'progress': 0,
@@ -345,6 +404,7 @@ def compress_file():
                 'job_id': job_id,
                 'status': st.get('status', 'starting'),
                 'filename': original_filename,
+                'source_path': source_path,
                 'original_size': original_size,
                 'status_url': f'/api/progress/{job_id}',
                 'download_url': f'/api/download/{job_id}',
@@ -387,9 +447,32 @@ def _publish_completed_web_job(job_id, result, method='fast'):
     from qzip.jobs import get_manager
     mgr = get_manager()
     output_path = mgr.output_path(job_id)
+    source_path = result.get('source_path')
+    original_filename = result.get('original_filename')
+    orig_sha256 = result.get('orig_sha256')
+    if not orig_sha256 and output_path and Path(output_path).exists():
+        try:
+            ident = identity_from_container(unpack(Path(output_path).read_bytes()))
+            orig_sha256 = orig_sha256 or ident.get('orig_sha256')
+            source_path = source_path or ident.get('source_path')
+            original_filename = original_filename or ident.get('original_filename')
+        except Exception:
+            pass
+    download = result.get('download_name') or claim_download_name(
+        original_filename, source_path=source_path, orig_sha256=orig_sha256, ext='.qz',
+    )
+    result['download_name'] = download
+    result['source_path'] = source_path
+    result['original_filename'] = original_filename
+    result['orig_sha256'] = orig_sha256
+    result['orig_sha256_short'] = short_sha(orig_sha256)
     job_data = {
         'type': 'compression',
-        'original_filename': result.get('original_filename'),
+        'original_filename': original_filename,
+        'source_path': source_path,
+        'orig_sha256': orig_sha256,
+        'orig_sha256_short': short_sha(orig_sha256),
+        'download_name': download,
         'original_size': result.get('original_size'),
         'output_path': output_path,
         'compressed_size': result.get('compressed_size'),
@@ -421,6 +504,9 @@ def _publish_completed_web_job(job_id, result, method='fast'):
     history_entry = {
         'job_id': job_id,
         'filename': result.get('original_filename'),
+        'source_path': source_path,
+        'orig_sha256_short': short_sha(orig_sha256),
+        'download_name': download,
         'original_size': result.get('original_size') or 0,
         'compressed_size': result.get('compressed_size') or 0,
         'compression_ratio': result.get('compression_ratio') or 0,
@@ -475,8 +561,14 @@ def get_compression_progress(job_id):
         )
         st = mgr.status(job_id, heartbeat=True)
         if st is not None:
-            if st.get('status') == 'complete' and st.get('result') and job_id not in COMPRESSION_JOBS:
-                _publish_completed_web_job(job_id, st['result'], st['result'].get('mode') or 'fast')
+            if st.get('status') == 'complete' and st.get('result'):
+                if job_id not in COMPRESSION_JOBS:
+                    _publish_completed_web_job(job_id, st['result'], st['result'].get('mode') or 'fast')
+                else:
+                    job = COMPRESSION_JOBS[job_id]
+                    for k in ('download_name', 'source_path', 'orig_sha256', 'orig_sha256_short', 'original_filename'):
+                        if job.get(k) is not None:
+                            st['result'][k] = job[k]
             return jsonify(st)
         if job_id in ACTIVE_COMPRESSIONS:
             progress = ACTIVE_COMPRESSIONS[job_id].copy()
@@ -579,16 +671,20 @@ def decompress_file():
             ACTIVE_DECOMPRESSIONS[job_id]['error'] = f'Invalid compressed file format: {str(e)}'
             return jsonify({'error': f'Invalid compressed file format: {str(e)}'}), 400
         
-        # Determine original filename for progress display
-        original_filename = compressed_data.get('original_filename', (strip_ext(file.filename) or file.filename))
-        if not original_filename:
-            original_filename = 'decompressed_file'
+        # Determine original filename for progress display (header first; strip_ext of the .qz is a fallback)
+        ident = identity_from_container(compressed_data)
+        original_filename = ident.get('original_filename') or clean_basename(strip_ext(file.filename) or file.filename) or 'decompressed_file'
+        source_path = ident.get('source_path')
+        expected_sha = ident.get('orig_sha256')
             
         # Update progress
         ACTIVE_DECOMPRESSIONS[job_id].update({
             'status': 'decompressing',
             'progress': 20,
             'original_filename': original_filename,
+            'source_path': source_path,
+            'orig_sha256': expected_sha,
+            'orig_sha256_short': short_sha(expected_sha),
             'message': f'Decompressing {original_filename}...'
         })
         
@@ -659,6 +755,12 @@ def decompress_file():
                 # Always handle as bytes: text-mode writes change line endings on Windows (not byte-exact)
                 decompressed_data = base64.b64decode(decompressed_data_base64)
                 is_text = False
+                got_sha = hashlib.sha256(decompressed_data if isinstance(decompressed_data, (bytes, bytearray)) else decompressed_data.encode('utf-8')).hexdigest()
+                if expected_sha and got_sha != expected_sha:
+                    ACTIVE_DECOMPRESSIONS[job_id]['status'] = 'error'
+                    ACTIVE_DECOMPRESSIONS[job_id]['error'] = f'sha256 mismatch: expected {expected_sha}, got {got_sha}'
+                    return
+                sha_verified = bool(expected_sha) and got_sha == expected_sha
                 
                 # Update progress
                 ACTIVE_DECOMPRESSIONS[job_id]['progress'] = 90
@@ -679,10 +781,18 @@ def decompress_file():
                 content_type = mimetypes.guess_type(original_filename)[0] or ('text/plain' if is_text else 'application/octet-stream')
                 
                 # Store job data
+                decomp_download = claim_download_name(
+                    original_filename, source_path=source_path, orig_sha256=expected_sha or got_sha, ext='',
+                )
                 COMPRESSION_JOBS[job_id] = {
                     'type': 'decompression',
                     'temp_file_path': temp_file.name,
                     'original_filename': original_filename,
+                    'source_path': source_path,
+                    'orig_sha256': expected_sha or got_sha,
+                    'orig_sha256_short': short_sha(expected_sha or got_sha),
+                    'sha256_verified': sha_verified,
+                    'download_name': decomp_download,
                     'content_type': content_type,
                     'size': decompressed_size,
                     'timestamp': datetime.now().isoformat()
@@ -698,7 +808,15 @@ def decompress_file():
                     'decompressed_size': decompressed_size,
                     'decompression_time': decompression_time,
                     'download_url': f'/api/download/{job_id}',
+                    'original_filename': original_filename,
+                    'source_path': source_path,
+                    'orig_sha256': expected_sha or got_sha,
+                    'orig_sha256_short': short_sha(expected_sha or got_sha),
+                    'sha256_verified': sha_verified,
+                    'download_name': decomp_download,
                     'message': 'Decompression complete!'
+                    + (f' sha256 verified ({short_sha(expected_sha or got_sha)})' if sha_verified else
+                       (' sha256 not recorded (old file)' if not expected_sha else ''))
                 })
                 
                 logger.info(f"✅ Decompression Complete: {original_filename}")
@@ -891,18 +1009,20 @@ def compress_folder_direct():
     for file in files:
         if file.filename:
             try:
+                original_filename = clean_basename(file.filename) or 'upload.bin'
+                source_path = sanitize_source_path(file.filename, basename=original_filename) or original_filename
                 # Read file data
                 file_data = file.read()
                 file_size = len(file_data)
                 total_original_size += file_size
                 
-                logger.info(f"🔬 Compressing {file.filename} ({file_size:,} bytes)")
+                logger.info(f"🔬 Compressing {source_path} ({file_size:,} bytes)")
                 
                 # Compress individual file
                 compression_data = {
                     "data": base64.b64encode(file_data).decode('utf-8'),
                     "method": method,
-                    "filename": file.filename
+                    "filename": source_path
                 }
                 
                 headers = {
@@ -924,10 +1044,12 @@ def compress_folder_direct():
                     successful_compressions += 1
                     
                     compression_ratio = file_size / compressed_size if compressed_size > 0 else 0
-                    logger.info(f"✅ {file.filename}: {file_size:,} → {compressed_size:,} bytes ({compression_ratio:.1f}:1)")
+                    logger.info(f"✅ {source_path}: {file_size:,} → {compressed_size:,} bytes ({compression_ratio:.1f}:1)")
                     
                     compressed_files.append({
-                        'filename': file.filename,
+                        'filename': source_path,
+                        'original_filename': original_filename,
+                        'source_path': source_path,
                         'original_size': file_size,
                         'compressed_size': compressed_size,
                         'compressed_data': result['compressed_data'],
@@ -937,10 +1059,10 @@ def compress_folder_direct():
                     
                 else:
                     error_msg = response.json().get('error', 'Unknown error') if response.content else 'No response content'
-                    logger.error(f"❌ Failed to compress {file.filename}: {response.status_code} - {error_msg}")
+                    logger.error(f"❌ Failed to compress {source_path}: {response.status_code} - {error_msg}")
                     
             except Exception as e:
-                logger.error(f"❌ Error compressing {file.filename}: {e}")
+                logger.error(f"❌ Error compressing {source_path}: {e}")
     
     if successful_compressions == 0:
         return jsonify({'error': 'Failed to compress any files'}), 500
@@ -1349,13 +1471,10 @@ def download_file(job_id):
                 except Exception:
                     output_path = None
             if output_path and Path(output_path).exists() and not raw_format:
-                filename = (job.get('original_filename') or 'download') + '.qz'
-                return send_file(
-                    output_path,
-                    as_attachment=True,
-                    download_name=filename,
-                    mimetype='application/octet-stream'
+                filename = job.get('download_name') or (
+                    (job.get('original_filename') or 'download') + '.qz'
                 )
+                return attachment_response(output_path, filename, as_file=True)
             
             # Check if this is an image compression
             compression_method = job.get('method', '')
@@ -1363,26 +1482,18 @@ def download_file(job_id):
             
             if raw_format:
                 # Download just the raw compressed data (tiny file)
-                filename = job['original_filename'] + '.qcr'  # .qcr for raw
+                filename = (job.get('original_filename') or 'download') + '.qcr'  # .qcr for raw
                 try:
                     # Stream the raw compressed data directly
                     compressed_bytes = base64.b64decode(job['compressed_data'])
-                    
-                    return Response(
-                        compressed_bytes,
-                        mimetype='application/octet-stream',
-                        headers={
-                            'Content-Disposition': f'attachment; filename="{filename}"',
-                            'Content-Length': str(len(compressed_bytes))
-                        }
-                    )
+                    return attachment_response(compressed_bytes, filename)
                 except Exception as e:
                     logger.error(f"Raw download error: {e}")
                     return jsonify({'error': f'Raw download failed: {str(e)}'}), 500
             else:
                 # For images compressed with quantum_wavelet_image, decompress and return viewable JPEG
                 if is_image_compression and compression_method == 'quantum_wavelet_image':
-                    filename = job['original_filename']  # Keep original filename
+                    filename = job.get('download_name') or job.get('original_filename') or 'download'
                     
                     try:
                         # Get the compressed data
@@ -1399,31 +1510,27 @@ def download_file(job_id):
                         mime_type = mimetypes.guess_type(filename)[0] or 'image/jpeg'
                         
                         # Return the decompressed viewable JPEG
-                        return Response(
-                            viewable_jpeg,
-                            mimetype=mime_type,
-                            headers={
-                                'Content-Disposition': f'attachment; filename="{filename}"',
-                                'Content-Length': str(len(viewable_jpeg))
-                            }
-                        )
+                        return attachment_response(viewable_jpeg, filename, mimetype=mime_type)
                     except Exception as e:
                         logger.error(f"Image processing error: {e}")
                         return jsonify({'error': f'Image processing failed: {str(e)}'}), 500
                 else:
                     # Non-images: the .qz container (same bytes as `qzip compress`, see qzip/container.py)
-                    filename = job['original_filename'] + '.qz'
+                    filename = job.get('download_name') or ((job.get('original_filename') or 'download') + '.qz')
                     try:
                         from qzip.container import pack
-                        qz = pack({
+                        packed = {
                             'compressed_data': job['compressed_data'],
                             'reconstruction_metadata': job.get('reconstruction_metadata'),
                             'method': job['method'],
                             'quantum_parameters': job.get('quantum_parameters', {}),
-                        })
-                        return Response(qz, mimetype='application/octet-stream',
-                                        headers={'Content-Disposition': f'attachment; filename="{filename}"',
-                                                 'Content-Length': str(len(qz))})
+                        }
+                        attach_identity(packed, source_path=job.get('source_path'),
+                                        original_filename=job.get('original_filename'))
+                        if job.get('orig_sha256'):
+                            packed.setdefault('orig_sha256', job['orig_sha256'])
+                        qz = pack(packed)
+                        return attachment_response(qz, filename)
                     except Exception as e:
                         logger.error(f"QC download error: {e}")
                         return jsonify({'error': f'QC download failed: {str(e)}'}), 500
@@ -1434,11 +1541,12 @@ def download_file(job_id):
             if not file_path:
                 return jsonify({'error': 'Decompressed file not found'}), 404
             
-            return send_file(
+            filename = job.get('download_name') or job.get('original_filename') or 'decompressed_file'
+            return attachment_response(
                 file_path,
-                as_attachment=True,
-                download_name=job['original_filename'],
-                mimetype=job.get('content_type', 'application/zip')
+                filename,
+                mimetype=job.get('content_type', 'application/zip'),
+                as_file=True,
             )
         
         else:

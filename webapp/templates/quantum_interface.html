@@ -265,6 +265,65 @@
         let selectedFiles = [];
         let selectedFolder = null;
         let apiKey = localStorage.getItem('quantumApiKey') || '';
+
+        function escapeHtml(s) {
+            return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+            }[c]));
+        }
+
+        function sourcePathOf(file) {
+            if (!file) return '';
+            const raw = file._sourcePath || file.webkitRelativePath || file.name || '';
+            return String(raw).replace(/\\/g, '/').replace(/^\/+/, '');
+        }
+
+        function filenameFromContentDisposition(header) {
+            if (!header) return 'download';
+            const star = header.match(/filename\*\s*=\s*(?:UTF-8''([^;]+))/i);
+            if (star && star[1]) {
+                try { return decodeURIComponent(star[1].trim()); } catch (e) { /* fall through */ }
+            }
+            const quoted = header.match(/filename\s*=\s*"((?:\\.|[^"])*)"/i);
+            if (quoted) return quoted[1].replace(/\\"/g, '"');
+            const plain = header.match(/filename\s*=\s*([^;]+)/i);
+            if (plain) return plain[1].replace(/['"]/g, '').trim();
+            return 'download';
+        }
+
+        async function filesFromDataTransfer(dataTransfer) {
+            const items = dataTransfer && dataTransfer.items;
+            if (!items || !items.length) return null;
+            const canWalk = Array.from(items).some(it => typeof it.webkitGetAsEntry === 'function' && it.webkitGetAsEntry());
+            if (!canWalk) return null;
+
+            const out = [];
+            const walk = async (entry) => {
+                if (!entry) return;
+                if (entry.isFile) {
+                    const file = await new Promise((resolve, reject) => entry.file(resolve, reject));
+                    const rel = (entry.fullPath || '').replace(/^\/+/, '');
+                    file._sourcePath = rel || file.webkitRelativePath || file.name;
+                    out.push(file);
+                    return;
+                }
+                if (entry.isDirectory) {
+                    const reader = entry.createReader();
+                    const readAll = async () => {
+                        const batch = await new Promise((resolve, reject) => reader.readEntries(resolve, reject));
+                        if (!batch.length) return;
+                        for (const child of batch) await walk(child);
+                        await readAll();
+                    };
+                    await readAll();
+                }
+            };
+            for (const item of items) {
+                const entry = item.webkitGetAsEntry ? item.webkitGetAsEntry() : null;
+                if (entry) await walk(entry);
+            }
+            return out.length ? out : null;
+        }
         
         // DOM elements
         const dropZone = document.getElementById('dropZone');
@@ -371,10 +430,11 @@
             dropZone.classList.remove('dragover');
         });
         
-        dropZone.addEventListener('drop', (e) => {
+        dropZone.addEventListener('drop', async (e) => {
             e.preventDefault();
             dropZone.classList.remove('dragover');
-            handleFiles(e.dataTransfer.files);
+            const walked = await filesFromDataTransfer(e.dataTransfer);
+            handleFiles(walked || e.dataTransfer.files);
         });
         
         function handleFileSelect(e) {
@@ -393,18 +453,22 @@
             }
             
             fileList.classList.remove('hidden');
-            fileListItems.innerHTML = selectedFiles.map((file, index) => `
+            fileListItems.innerHTML = selectedFiles.map((file, index) => {
+                const src = sourcePathOf(file);
+                const label = src && src !== file.name ? src : file.name;
+                return `
                 <div class="flex items-center justify-between p-3 bg-gray-50 rounded-md">
                     <div class="flex items-center">
                         <i class="fas fa-file text-gray-400 mr-3"></i>
-                        <span class="text-sm text-gray-700">${file.name}</span>
+                        <span class="text-sm text-gray-700">${escapeHtml(label)}</span>
                         <span class="text-xs text-gray-500 ml-2">(${formatFileSize(file.size)})</span>
                     </div>
                     <button onclick="removeFile(${index})" class="text-red-500 hover:text-red-700">
                         <i class="fas fa-times"></i>
                     </button>
                 </div>
-            `).join('');
+            `;
+            }).join('');
         }
         
         window.removeFile = (index) => {
@@ -431,10 +495,11 @@
             folderDropZone.classList.remove('dragover');
         });
         
-        folderDropZone.addEventListener('drop', (e) => {
+        folderDropZone.addEventListener('drop', async (e) => {
             e.preventDefault();
             folderDropZone.classList.remove('dragover');
-            handleFolderFiles(e.dataTransfer.files);
+            const walked = await filesFromDataTransfer(e.dataTransfer);
+            handleFolderFiles(walked || e.dataTransfer.files);
         });
         
         function handleFolderSelect(e) {
@@ -550,7 +615,7 @@
                 
                 // Add all files to form data
                 selectedFolder.forEach(file => {
-                    formData.append('files', file, file.name);
+                    formData.append('files', file, sourcePathOf(file) || file.name);
                 });
                 
                 folderProgressText.textContent = `Compressing ${totalFiles} files...`;
@@ -1009,6 +1074,8 @@
                     formData.append('file', file);
                     formData.append('method', method);
                     formData.append('async', '1');
+                    const sourcePath = sourcePathOf(file);
+                    if (sourcePath) formData.append('source_path', sourcePath);
 
                     const response = await fetch('/api/compress', {
                         method: 'POST',
@@ -1037,8 +1104,8 @@
 
                     currentJobId = payload.job_id;
                     activeJobId = payload.job_id;
-                    activeFilename = file.name;
-                    startProgressPolling(payload.job_id, file.name, file.size);
+                    activeFilename = sourcePathOf(file) || file.name;
+                    startProgressPolling(payload.job_id, activeFilename, file.size);
                     const final = await waitForCompression(payload.job_id);
                     stopProgressPolling(final.status === 'complete');
                     currentJobId = null;
@@ -1074,11 +1141,16 @@
         });
 
         function displayResult(result) {
+            const title = result.original_filename || result.filename || 'file';
+            const src = result.source_path && result.source_path !== title ? result.source_path : '';
+            const shaShort = result.orig_sha256_short || (result.orig_sha256 ? String(result.orig_sha256).slice(0, 6) : '');
+            const dlName = result.download_name ? `Download as ${result.download_name}` : 'Download';
             const resultHtml = `
                 <div class="border rounded-lg p-4 ${result.error ? 'border-red-300 bg-red-50' : 'border-green-300 bg-green-50'}">
                     <div class="flex items-center justify-between">
                         <div>
-                            <h4 class="font-semibold text-gray-900">${result.original_filename || result.filename}</h4>
+                            <h4 class="font-semibold text-gray-900">${escapeHtml(title)}</h4>
+                            ${src ? `<p class="text-xs text-gray-500">${escapeHtml(src)}</p>` : ''}
                             ${result.success ? `
                                 <p class="text-sm text-gray-600">
                                     ${result.original_size_formatted} → ${result.compressed_size_formatted}
@@ -1087,14 +1159,15 @@
                                 <p class="text-xs text-gray-500">
                                     Saved ${result.space_saved_percent}% • ${result.compression_time}s
                                     ${result.detected_type ? ` • type: ${result.detected_type} → ${result.route_method || result.method}` : ''}
+                                    ${shaShort ? ` • sha256 ${escapeHtml(shaShort)}` : ''}
                                 </p>
                             ` : `
-                                <p class="text-sm text-red-600">${result.error}</p>
+                                <p class="text-sm text-red-600">${escapeHtml(result.error)}</p>
                             `}
                         </div>
                         ${result.success ? `
                             <button onclick="handleDownload('${result.download_url}')" class="gradient-bg text-white px-4 py-2 rounded-md text-sm hover:opacity-90">
-                                <i class="fas fa-download"></i> Download
+                                <i class="fas fa-download"></i> ${escapeHtml(dlName)}
                             </button>
                         ` : ''}
                     </div>
@@ -1168,10 +1241,14 @@
                             startDecompressionProgress(result.job_id, file.name, file.size);
                             
                             // Wait for completion
-                            await waitForDecompression(result.job_id);
-                            
-                            // Download the file
-                            await downloadFile(result.download_url);
+                            const final = await waitForDecompression(result.job_id);
+                            if (final && final.status === 'complete') {
+                                resultsSection.classList.remove('hidden');
+                                displayDecompressResult(final);
+                                await downloadFile(final.download_url || result.download_url);
+                            } else if (final && final.status === 'error') {
+                                alert(`Decompression failed: ${final.error || 'unknown error'}`);
+                            }
                         }
                     } else {
                         const error = await response.json();
@@ -1248,6 +1325,33 @@
             }
         }
         
+        function displayDecompressResult(result) {
+            const title = result.original_filename || result.filename || 'file';
+            const src = result.source_path && result.source_path !== title ? result.source_path : '';
+            const shaShort = result.orig_sha256_short || (result.orig_sha256 ? String(result.orig_sha256).slice(0, 6) : '');
+            const verified = result.sha256_verified;
+            const shaNote = verified ? `sha256 verified (${shaShort})`
+                : (shaShort ? `sha256 ${shaShort} (not recorded in this archive)` : 'sha256 not recorded (old file)');
+            const resultHtml = `
+                <div class="border rounded-lg p-4 border-green-300 bg-green-50">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <h4 class="font-semibold text-gray-900">${escapeHtml(title)}</h4>
+                            ${src ? `<p class="text-xs text-gray-500">${escapeHtml(src)}</p>` : ''}
+                            <p class="text-sm text-gray-600">${result.decompressed_size ? formatFileSize(result.decompressed_size) : ''}</p>
+                            <p class="text-xs text-gray-500">${escapeHtml(shaNote)}</p>
+                        </div>
+                        ${result.download_url ? `
+                            <button onclick="handleDownload('${result.download_url}')" class="gradient-bg text-white px-4 py-2 rounded-md text-sm hover:opacity-90">
+                                <i class="fas fa-download"></i> ${escapeHtml(result.download_name || title)}
+                            </button>
+                        ` : ''}
+                    </div>
+                </div>
+            `;
+            resultsContainer.insertAdjacentHTML('beforeend', resultHtml);
+        }
+
         // Utility functions
         async function handleDownload(url) {
             await downloadFile(url);
@@ -1276,15 +1380,8 @@
                     throw new Error(`Download failed: ${response.status} ${response.statusText}`);
                 }
                 
-                // Get filename from Content-Disposition header or use default
-                let filename = 'download';
-                const contentDisposition = response.headers.get('Content-Disposition');
-                if (contentDisposition) {
-                    const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
-                    if (filenameMatch && filenameMatch[1]) {
-                        filename = filenameMatch[1].replace(/['"]/g, '');
-                    }
-                }
+                // Prefer RFC 5987 filename* so names with spaces, folders, or non-ASCII stay intact
+                const filename = filenameFromContentDisposition(response.headers.get('Content-Disposition'));
                 
                 console.log('Creating blob...');
                 const blob = await response.blob();

@@ -16,6 +16,7 @@ from __future__ import annotations
 import atexit
 import base64
 import gzip
+import hashlib
 import json
 import logging
 import os
@@ -113,12 +114,17 @@ def _test_compress(input_path, mode):
     while time.time() < deadline:
         time.sleep(min(0.05, max(0.0, deadline - time.time())))
     data = Path(input_path).read_bytes()
+    osha = hashlib.sha256(data).hexdigest()
     container = {
         "compressed_data": base64.b64encode(data).decode("ascii"),
         "reconstruction_metadata": None,
         "method": "test",
-        "quantum_parameters": {"qzip": {"mode": mode, "chosen": "test", "detected_type": "test", "tried": ["test"]}},
+        "quantum_parameters": {"qzip": {"mode": mode, "chosen": "test", "detected_type": "test", "tried": ["test"],
+                                        "orig_sha256": osha, "orig_size": len(data)}},
+        "orig_sha256": osha,
+        "orig_size": len(data),
         "verified": True,
+        "format": "qzip-1",
     }
     info = {"payload": max(1, len(data)), "ratio": 1.0, "chosen": "test", "tried": ["test"]}
     return container, info
@@ -153,6 +159,7 @@ def worker_main(argv=None):
     p.add_argument("--result", required=True)
     p.add_argument("--mode", default="auto")
     p.add_argument("--filename", default="upload")
+    p.add_argument("--source-path", default="", dest="source_path")
     args = p.parse_args(argv)
 
     _install_worker_signals()
@@ -171,6 +178,16 @@ def worker_main(argv=None):
             "message": f"Compressing {args.filename}...",
         })
         container, info = _compress_fn()(args.input, args.mode)
+        from qzip.identity import attach_identity, short_sha
+        attach_identity(container, source_path=args.source_path or None, original_filename=args.filename)
+        if not container.get("orig_sha256"):
+            try:
+                osha = hashlib.sha256(Path(args.input).read_bytes()).hexdigest()
+            except OSError:
+                osha = None
+            if osha:
+                container["orig_sha256"] = osha
+                container.setdefault("orig_size", original_size)
         payload = max(1, int(info.get("payload") or 1))
         ratio = (original_size / payload) if original_size else 1.0
         elapsed = time.time() - started
@@ -187,10 +204,16 @@ def worker_main(argv=None):
         gz_size = build_qc_gz(container, args.output)
         elapsed = time.time() - started
         qp = (container.get("quantum_parameters") or {}).get("qzip") or {}
+        ident_path = container.get("source_path")
+        ident_name = container.get("original_filename") or args.filename
+        ident_sha = container.get("orig_sha256")
         result = {
             "success": True,
             "job_id": args.job_id,
-            "original_filename": args.filename,
+            "original_filename": ident_name,
+            "source_path": ident_path,
+            "orig_sha256": ident_sha,
+            "orig_sha256_short": short_sha(ident_sha),
             "original_size": original_size,
             "original_size_formatted": format_file_size(original_size),
             "compressed_size": payload,
@@ -303,7 +326,7 @@ class JobManager:
     def _record(self, job_id):
         return self._jobs.get(job_id)
 
-    def start(self, input_path, filename, mode="auto", heartbeat_required=True, job_id=None):
+    def start(self, input_path, filename, mode="auto", heartbeat_required=True, job_id=None, source_path=None):
         job_id = job_id or uuid.uuid4().hex
         status_path = self.jobs_dir / f"{job_id}.status.json"
         result_path = self.jobs_dir / f"{job_id}.result.json"
@@ -338,6 +361,8 @@ class JobManager:
             "--mode", mode or "auto",
             "--filename", filename,
         ]
+        if source_path:
+            cmd.extend(["--source-path", str(source_path)])
         log_path = self.jobs_dir / f"{job_id}.worker.log"
         rec_log = str(log_path)
         log_f = open(log_path, "wb")
@@ -354,6 +379,7 @@ class JobManager:
         rec = {
             "job_id": job_id,
             "filename": filename,
+            "source_path": source_path,
             "mode": mode or "auto",
             "input_path": str(input_path),
             "output_path": str(output_path),

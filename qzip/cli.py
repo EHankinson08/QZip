@@ -16,6 +16,7 @@
         legacy          original Oct-2025 routes only ("QZip today")
   qzip decompress <file.qz|file.qc.gz|file.qc> [-o out]
   qzip verify <file.qz> [original]
+  qzip info <file.qz>                     show header: method, size, sha256, original name, source path
   qzip bench <file> [--mode ...]          QZip vs xz / zstd / brotli / bzip2 (all byte-exact checked)
   qzip web [--host 127.0.0.1] [--port 5000]   drag-and-drop web UI + local API (no API key)
 """
@@ -50,15 +51,20 @@ def _write(path, data, force):
 
 def cmd_compress(a):
     from qzip.core import compress_bytes, dump_container
+    from qzip.identity import attach_identity, relative_source_path
     data = open(a.file, "rb").read()
     t = time.time()
     container, info = compress_bytes(data, mode=_mode(a))
+    attach_identity(container, source_path=relative_source_path(a.file),
+                    original_filename=os.path.basename(a.file))
     blob = dump_container(container)
     out = a.output or a.file + ".qz"
     _write(out, blob, a.force)
+    src = container.get("source_path")
+    src_note = f" source={src}" if src else ""
     print(f"{a.file}: {len(data):,} -> {len(blob):,} B ({len(data)/max(len(blob),1):.2f}:1) "
           f"type={info.get('detected_type') or '-'} method={info.get('route_choice') or info['chosen']} "
-          f"verified=yes {time.time()-t:.1f}s -> {out}")
+          f"verified=yes{src_note} {time.time()-t:.1f}s -> {out}")
     if a.verbose:
         f = ((container.get("quantum_parameters") or {}).get("qzip") or {}).get("features")
         if f:
@@ -73,7 +79,18 @@ def cmd_decompress(a):
     out_bytes = decompress_container(c)   # raises if sha256 recorded and mismatched
     out = a.output or _out_name_decompress(a.file)
     _write(out, out_bytes, a.force)
-    print(f"{a.file} -> {out} ({len(out_bytes):,} B, sha256 {'verified' if c.get('orig_sha256') or (c.get('quantum_parameters') or {}).get('qzip') else 'not recorded (old file)'})")
+    from qzip.identity import identity_from_container
+    ident = identity_from_container(c)
+    sha_note = "verified" if c.get("orig_sha256") or (c.get("quantum_parameters") or {}).get("qzip") else "not recorded (old file)"
+    extra = []
+    if ident.get("original_filename"):
+        extra.append(f"name={ident['original_filename']}")
+    if ident.get("source_path"):
+        extra.append(f"source={ident['source_path']}")
+    if ident.get("orig_sha256"):
+        extra.append(f"sha256={ident['orig_sha256']}")
+    extra_s = (" " + " ".join(extra)) if extra else ""
+    print(f"{a.file} -> {out} ({len(out_bytes):,} B, sha256 {sha_note}{extra_s})")
     return 0
 
 def cmd_verify(a):
@@ -86,8 +103,19 @@ def cmd_verify(a):
     ok = True
     if a.original:
         ok = hashlib.sha256(out).digest() == hashlib.sha256(open(a.original, "rb").read()).digest()
+    from qzip.identity import identity_from_container
+    ident = identity_from_container(c)
+    extra = []
+    if ident.get("original_filename"):
+        extra.append(f"name={ident['original_filename']}")
+    if ident.get("source_path"):
+        extra.append(f"source={ident['source_path']}")
+    if ident.get("orig_sha256"):
+        extra.append(f"sha256={ident['orig_sha256']}")
+    extra_s = (" " + " ".join(extra)) if extra else ""
     print(f"{'OK' if ok else 'FAIL'} {a.file}: decodes to {len(out):,} B"
-          + (f", {'matches' if ok else 'DIFFERS FROM'} {a.original}" if a.original else ""))
+          + (f", {'matches' if ok else 'DIFFERS FROM'} {a.original}" if a.original else "")
+          + extra_s)
     return 0 if ok else 1
 
 def _baselines(data):
@@ -116,6 +144,31 @@ def _baselines(data):
         res.append(("brotli -11", None, "pip install brotli", 0))
     run("bzip2 -9", lambda b: bz2.compress(b, 9), bz2.decompress)
     return res
+
+def cmd_info(a):
+    from qzip.core import load_container
+    from qzip.identity import identity_from_container
+    raw = open(a.file, "rb").read()
+    c = load_container(raw)
+    ident = identity_from_container(c)
+    qp = (c.get("quantum_parameters") or {}).get("qzip") or {}
+    rows = [
+        ("file", a.file),
+        ("format", c.get("format") or qp.get("format") or "unknown"),
+        ("size", f"{len(raw):,} B"),
+        ("method", c.get("method") or "-"),
+        ("mode", qp.get("mode") or "-"),
+        ("codec", qp.get("chosen") or "-"),
+        ("orig_size", ident.get("orig_size") if ident.get("orig_size") is not None else c.get("orig_size") or "-"),
+        ("orig_sha256", ident.get("orig_sha256") or "not recorded"),
+        ("original_filename", ident.get("original_filename") or "not recorded"),
+        ("source_path", ident.get("source_path") or "not recorded"),
+        ("verified", c.get("verified") if "verified" in c else qp.get("verified", "-")),
+    ]
+    width = max(len(k) for k, _ in rows)
+    for k, v in rows:
+        print(f"{k:<{width}}  {v}")
+    return 0
 
 def cmd_bench(a):
     from qzip.core import compress_bytes, dump_container, load_container, decompress_container
@@ -161,6 +214,7 @@ def main(argv=None):
     p = sub.add_parser("decompress"); p.add_argument("file"); p.add_argument("-o", "--output")
     p.add_argument("-f", "--force", action="store_true"); p.set_defaults(fn=cmd_decompress)
     p = sub.add_parser("verify"); p.add_argument("file"); p.add_argument("original", nargs="?"); p.set_defaults(fn=cmd_verify)
+    p = sub.add_parser("info", help="show .qz header fields (name, source path, sha256)"); p.add_argument("file"); p.set_defaults(fn=cmd_info)
     p = sub.add_parser("bench"); p.add_argument("file"); p.add_argument("--mode", choices=MODES, default=DEFAULT_MODE)
     p.add_argument("--max", action="store_true", help="= --mode auto-max")
     p.add_argument("--codec", choices=CODECS); p.add_argument("--ram-mb", type=int); p.add_argument("--no-verify", action="store_true")

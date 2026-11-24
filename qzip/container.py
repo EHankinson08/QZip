@@ -3,7 +3,9 @@
 Layout (format qzip-2, all new files):
     b"QZIP" | version byte 0x02 | u32 little-endian header length | header (compact UTF-8 JSON) | payload (raw bytes)
 The header holds everything except the payload: method, reconstruction_metadata, quantum_parameters (incl. the
-qzip block: orig_sha256, orig_size, decoder, route...), orig_sha256, orig_size. The payload is the codec output as
+qzip block: orig_sha256, orig_size, decoder, route...), orig_sha256, orig_size, and optional identity fields
+(original_filename, source_path: a sanitized relative path, never absolute and never `..`). Older readers ignore
+unknown JSON keys, so v1.0.0 still opens files that carry these fields. The payload is the codec output as
 is: no base64, no gzip, so the file is the benchmarked size plus a few hundred bytes of header.
 
 Readers also accept the older containers: JSON with a base64 payload, optionally gzipped and/or space-padded
