@@ -14,8 +14,8 @@ A verified lossless compressor with a local drag-and-drop web app and CLI. Its d
 Mathieu Chartier's **mcm** context-mixing compressor, with new CSV/table and text models added by QZip.
 
 ## Credit (say this)
-Most of the compression comes from **mcm** (Mathieu Chartier; Copyright (C) 2013 Google Inc.; GPL-3.0-or-later). QZip's fork adds about
-1–1.2% on text and 20–26% on tabular CSVs on top of mcm. QZip is GPL-3.0-or-later as a result.
+The default engine starts from a fork of Mathieu Chartier's mcm (GPL-3.0-or-later), with our own table and text models
+on top — that's where the CSV and text gains come from. We also built x18, qzs, qzb and qzm from scratch.
 
 ## Headline numbers
 
