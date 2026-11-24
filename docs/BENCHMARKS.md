@@ -90,6 +90,13 @@ qzs compress time includes a self-check decode. On every file where mcm -x11 has
 
 21 of 26 volumes are finished (all byte-exact). Bold in the full table in `src/qzcore/RESULTS.md` means qzm beat both QMED pass 2 and a byte-exact old artifact (or beat QMED when no exact artifact exists). 17 of those 21 meet that bar. Honest misses: three 100001 volumes beat QMED but lose to the old artifact; the 35.7 MB segmentation volume `100026_time2_seg` is 5,457 B vs QMED 4,106 B (**QMED wins by 32.9%**). Five volumes are still running or queued.
 
+**Against standard codecs** (same volumes, PC2, 21 Nov 2026, every result sha256 byte-exact): qzm is smaller than
+gzip -9, xz -9, zstd -19 --long=27, bzip2 -9 and brotli -11 on 20 of the 21 finished volumes. Totals over the twenty
+71,424,352 B volumes: qzm 56,641,606 B; xz -9 67,630,616; bzip2 -9 69,058,235; brotli -11 69,357,093; zstd -19 --long
+73,466,559; gzip -9 109,610,486. On `100026_time2_seg` bzip2 -9 (4,567 B) also beats qzm (5,457 B). The standard
+codecs took at most 34.3 s to compress and 2.8 s to decompress any volume; their peak RAM was not recorded. README
+chart: [`img/medical_size_vs_time.png`](img/medical_size_vs_time.png) (`python3 docs/img/make_medical_chart.py`).
+
 | file (examples) | orig B | qzm B | QMED pass 2 | old artifact | c s | d s | RSS MB | OK |
 |---|---:|---:|---:|---:|---:|---:|---:|---|
 | 100001_time1_flair | 71,424,352 | **1,483,123** | 1,687,424 | 1,716,793 | 82.3 | 40.3 | 2,175 | OK |
