@@ -1,0 +1,2 @@
+#!/bin/bash
+D=$(dirname "$0"); export QZC_BIN=${QZC_BIN:-$D/qzc}; exec python3 $D/qzcsv.py "$@"

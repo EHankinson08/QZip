@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qzip"
+version = "1.0.0"
+description = "Verified lossless compression: mcm-class text, much smaller CSVs, and a local drag-and-drop web app"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"]
+authors = [{name = "Elliott Hankinson"}]
+dependencies = [
+  "numpy>=1.21", "zstandard>=0.20",
+  "flask>=2.2", "flask-cors>=3.0", "requests>=2.28",
+  "fastapi>=0.95", "uvicorn>=0.20", "pydantic>=1.10",
+]
+
+[project.optional-dependencies]
+# The 2025 engines (modes fast/max/ultra/legacy/hybrid, decoding 2025 web-app .qc files). Not needed for the default
+# engine, --max, or the web UI.
+legacy = [
+  "scipy>=1.7", "torch>=1.12", "numba>=0.56", "psutil>=5.9", "prometheus-client>=0.15", "orjson>=3.8",
+  "aiofiles>=22", "aiohttp>=3.8", "pillow>=9", "PyWavelets>=1.4",
+]
+bench = ["brotli>=1.0"]
+test = ["pytest>=7"]
+
+[project.scripts]
+qzip = "qzip.cli:main"
+
+[tool.setuptools]
+packages = ["qzip", "webapp", "src", "src.native", "src.candidates"]
+
+# QZip runs from a source checkout (`pip install -e .`): the native build needs the C/C++ trees in src/, and the web
+# app reads webapp/templates from the checkout. No package data is copied.
+
+[tool.pytest.ini_options]
+# CI runs the regression suite (tests/regression).
+testpaths = ["tests/regression"]

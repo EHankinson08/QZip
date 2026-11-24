@@ -1,0 +1,15 @@
+* text=auto eol=lf
+*.png binary
+*.gif binary
+*.jpg binary
+*.qz binary
+*.gz binary
+*.sh text eol=lf
+*.bat text eol=crlf
+# vendored third-party code: keep out of language stats
+src/native/libbsc/** linguist-vendored
+src/qzcore/vendor/** linguist-vendored
+src/native/mcm/** linguist-vendored
+# benchmark data
+src/qzcore/bench/**/*.tsv linguist-generated
+src/qzcore/bench/**/*.jsonl linguist-generated

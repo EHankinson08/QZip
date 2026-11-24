@@ -1,0 +1,2 @@
+#!/bin/bash
+D=$(dirname "$0"); exec ${QZPY:-python3} "$D/qzmed.py" "$@"

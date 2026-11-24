@@ -1,0 +1,7 @@
+[max] router    files 12: best 10 (83%), within 1% 11 (92%), mean loss 0.180%, worst 1.18% (h_airports.csv)
+[max] verified  files 12: best 12 (100%), within 1% 12 (100%), mean loss 0.000%, worst 0.00% (h_astronaut.png)
+[max] verifier ran on 9 files; added time / full compress of the final codec: median 12.86%, max 878.57% (h_dpkg.log); verified pick unmeasured on 0
+[fast] router    files 12: best 11 (92%), within 1% 12 (100%), mean loss 0.016%, worst 0.19% (h_pystdlib.txt)
+[fast] verified  files 12: best 11 (92%), within 1% 12 (100%), mean loss 0.016%, worst 0.19% (h_pystdlib.txt)
+[fast] verifier ran on 7 files; added time / full compress of the final codec: median 38.00%, max 165.00% (h_words.txt); verified pick unmeasured on 0
+DONE

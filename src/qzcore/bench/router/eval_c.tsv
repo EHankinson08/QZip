@@ -1,0 +1,60 @@
+file	size	kind	pred_max	oracle_max	loss_max%	pred_fast	oracle_fast	loss_fast%	analysis_ms	comp_s(pred_max)
+bin_libclang18.so	34551120	binary	qzc2	qzc2	0.00	qzb_w0	qzb_w0	0.00	14.0	92.2
+bin_qzb.elf	596776	binary	qzc2	qzc2	0.00	qzb_w0	qzb_w0	0.00	15.7	2.1
+bin_weights16m.safetensors	16777216	binary	qzc2	qzc2	0.00	qzb_w0	qzb_w0	0.00	15.1	53.0
+cmp_vendor.tgz	232183	incompressible	stored	zstd	0.84	stored	stored	0.00	26.1	0.0
+csv_Data8277.csv	857672667	csv	qzs	qzs	0.00	qzb_w0	qzb_w0	0.00	15.2	886.0
+csv_Panel_2000_2022.csv	58192381	csv	qzs	qzs	0.00	qzb_w0	qzb	0.64	20.4	296.7
+csv_TRI_By_Name_1987_2014.csv	68403261	csv	qzs	qzs	0.00	qzb	qzb	0.00	16.3	204.4
+csv_fndds.csv	24057371	csv	qzs	qzs	0.00	qzb	qzb	0.00	15.5	127.2
+csv_fndds_64k.csv	65536	csv	qzc2	qzc2	0.00	qzb_w0	qzb_w0	0.00	7.9	0.1
+csv_hctsa.csv	33059330	text	qzc2	qzc2	0.00	qzb_w0	qzb_w0	0.00	13.8	68.5
+csv_products2m.csv	326108495	csv	qzs	qzs	0.00	qzb	qzb	0.00	15.0	387.0
+csv_youth-dataset-long-form.csv	55547651	csv	qzs	qzs	0.00	qzb	qzb_w0	0.13	14.9	138.8
+img_gemini.png	5318871	image	qzc2	qzc2	0.00	qzb_w0	qzb_w0	0.00	24.9	11.4
+img_kauai.jpg	13393201	image	qzc2	qzc2	0.00	qzb_w0	qzb_w0	0.00	23.7	29.2
+json_tokenizer.json	11422654	text	qzc2	qzc2	0.00	qzb_w0	qzb_w0	0.00	15.9	16.9
+log_Android.log	192270829	log	qzc2	qzc2	0.00	qzb	qzb	0.00	14.8	490.1
+log_Apache.log	5135876	log	qzc2	qzc2	0.00	qzb_w0	qzb	1.42	14.8	6.7
+log_HealthApp.log	23529931	log	qzs	qzs	0.00	qzb	qzb_w0	0.02	14.7	138.9
+log_SSH.log	73417506	log	qzc2	qzc2	0.00	qzb	qzb	0.00	14.7	91.4
+log_SSH_200k.log	200000	log	qzc2	qzc2	0.00	qzb_w0	qzb_w0	0.00	14.4	0.3
+med_100001_flair_subtraction.nii	71424352	medical	qzm	qzc2	1.47	qzb_w0	qzb	0.01	9.8	113.7
+med_100001_t1ce_subtraction.nii	71424352	medical	qzm	qzc2	3.52	qzb_w0	qzb_w0	0.00	10.0	87.5
+med_100001_time1_flair.nii	71424352	medical	qzm	qzm	0.00	qzb_w0	qzb_w0	0.00	10.0	82.3
+med_100001_time1_t1ce-t1.nii	71424352	medical	qzm	qzc2	1.42	qzb_w0	qzb_w0	0.00	10.1	94.6
+med_100001_time2_t1ce.nii	71424352	medical	qzm	qzc2	0.77	qzb_w0	qzb_w0	0.00	10.1	137.9
+med_100001_time2_t2.nii	71424352	medical	qzm	qzm	0.00	qzb_w0	qzb_w0	0.00	9.9	103.2
+med_100002_t1ce_subtraction.nii	71424352	medical	qzm	qzm	0.00	qzb_w0	qzb_w0	0.00	11.1	331.9
+med_100002_time2_t1ce.nii	71424352	medical	qzm	qzm	0.00	qzb_w0	qzb_w0	0.00	10.0	290.8
+med_100002_time2_t2.nii	71424352	medical	qzm	qzm	0.00	qzb_w0	qzb_w0	0.00	9.9	187.2
+med_100003_flair_subtraction.nii	71424352	medical	qzm	qzm	0.00	qzb_w0	qzb_w0	0.00	9.9	81.5
+med_100004_flair_subtraction.nii	71424352	medical	qzm	qzm	0.00	qzb_w0	qzb_w0	0.00	9.8	75.1
+med_100005_time2_t1ce-t1.nii	71424352	medical	qzm	qzm	0.00	qzb_w0	qzb_w0	0.00	10.0	87.5
+med_100008_time1_flair.nii	71424352	medical	qzm	qzm	0.00	qzb_w0	qzb_w0	0.00	9.9	105.0
+med_100011_time2_t1ce-t1.nii	71424352	medical	qzm	qzm	0.00	qzb_w0	qzb_w0	0.00	10.0	130.7
+med_100013_time1_t1.nii	71424352	medical	qzm	qzc2	0.16	qzb_w0	qzb_w0	0.00	10.6	294.3
+med_100015_time2_t1ce-t1.nii	71424352	medical	qzm	qzc2	13.34	qzb_w0	qzb_w0	0.00	12.9	264.0
+med_100018_flair_subtraction.nii	71424352	medical	qzm	qzm	0.00	qzb_w0	qzb_w0	0.00	11.4	234.3
+med_100018_time2_t2.nii	71424352	medical	qzm	qzm	0.00	qzb_w0	qzb_w0	0.00	9.9	72.2
+med_100020_time1_t1.nii	71424352	medical	qzm	qzm	0.00	qzb_w0	qzb_w0	0.00	10.1	95.9
+med_100023_time2_t1.nii	71424352	medical	qzm	qzm	0.00	qzb_w0	qzb_w0	0.00	9.8	104.0
+med_100026_time2_seg.nii	35712352	medical	qzb_w0	qzb_w0	0.00	qzb_w0	qzb_w0	0.00	9.6	0.1
+med_100026_time2_t1ce.nii	71424352	medical	qzm	qzc2	1.61	qzb_w0	qzb_w0	0.00	9.8	270.1
+med_100031_time2_flair.nii	71424352	medical	qzm	qzc2	2.59	qzb_w0	qzb_w0	0.00	9.9	237.6
+med_100038_time2_t1ce-t1.nii	71424352	medical	qzm	qzm	0.00	qzb_w0	qzb_w0	0.00	9.9	78.0
+med_100296_flair_subtraction.nii	71424352	medical	qzm	qzm	0.00	qzb_w0	qzb_w0	0.00	9.9	76.9
+med_100302_flair_subtraction.nii	71424352	medical	qzm	qzc2	10.54	qzb_w0	qzb_w0	0.00	10.1	102.1
+src_code.txt	1597043	text	qzc2	qzc2	0.00	qzb_w0	qzb	0.95	16.4	2.4
+txt_e10m	10000000	text	qzc2_text	qzc2_text	0.00	qzb_w0	qzb_w0	0.00	16.0	19.5
+txt_e1m	1000000	text	qzc2	qzc2_text	0.06	qzb_w0	qzb_w0	0.00	15.9	1.8
+txt_e3m	3000000	text	qzc2_text	qzc2_text	0.00	qzb_w0	qzb_w0	0.00	15.8	6.4
+txt_e5k	5000	text	qzc2	qzc2	0.00	qzb_w0	qzb_w0	0.00	0.9	0.0
+txt_enwik8	100000000	text	qzc2_text	qzc2_text	0.00	qzb	qzb	0.00	15.7	122.8
+txt_merges.txt	1671853	text	qzc2	qzc2	0.00	qzb_w0	qzb_w0	0.00	16.6	3.0
+
+[max] scored files 53: exact-best 42 (79%), within 1% 46 (87%), mean size loss 0.685%, max loss 13.34% (med_100015_time2_t1ce-t1.nii)
+[max] analysis time / predicted codec compress time: median 0.012%, max 15.960%
+
+[fast] scored files 53: exact-best 47 (89%), within 1% 52 (98%), mean size loss 0.060%, max loss 1.42% (log_Apache.log)
+[fast] analysis time / predicted codec compress time: median 1.582%, max 54.639%

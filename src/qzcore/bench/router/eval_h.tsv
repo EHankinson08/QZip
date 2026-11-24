@@ -1,0 +1,19 @@
+file	size	kind	pred_max	oracle_max	loss_max%	pred_fast	oracle_fast	loss_fast%	analysis_ms	comp_s(pred_max)
+h_airports.csv	3043965	csv	qzs	qzc2	1.18	qzb_w0	qzb_w0	0.00	25.8	14.9
+h_astronaut.png	791555	image	qzc2	qzc2	0.00	qzb_w0	qzb_w0	0.00	23.4	3.1
+h_cidds.csv	22282855	log	qzc2	qzc2	0.00	qzb	qzb	0.00	23.0	66.2
+h_dpkg.log	79526	log	qzc2	qzc2	0.00	qzb_w0	qzb_w0	0.00	14.3	0.1
+h_food_nutrient.csv	9166952	csv	qzc2	qzc2	0.00	qzb_w0	qzb_w0	0.00	27.0	44.0
+h_openstack.log	5436122	log	qzc2	qzc2	0.00	qzb_w0	qzb_w0	0.00	23.2	14.1
+h_pystdlib.txt	4000000	text	qzc2	qzc2	0.00	qzb_w0	qzb	0.19	27.2	9.2
+h_python312.elf	8020928	binary	qzc2	qzc2	0.00	qzb_w0	qzb_w0	0.00	18.7	20.5
+h_records100k.csv	27811781	csv	qzs	qzc2	0.98	qzb	qzb	0.00	24.1	118.8
+h_retina.jpg	269564	image	qzc2	qzc2	0.00	qzb_w0	qzb_w0	0.00	24.3	1.1
+h_train.jsonl	272537	text	qzc2	qzc2	0.00	qzb_w0	qzb_w0	0.00	14.7	0.8
+h_words.txt	985084	text	qzc2	qzc2	0.00	qzb_w0	qzb_w0	0.00	16.0	3.1
+
+[max] scored files 12: exact-best 10 (83%), within 1% 11 (92%), mean size loss 0.180%, max loss 1.18% (h_airports.csv)
+[max] analysis time / predicted codec compress time: median 0.297%, max 10.212%
+
+[fast] scored files 12: exact-best 11 (92%), within 1% 12 (100%), mean size loss 0.016%, max loss 0.19% (h_pystdlib.txt)
+[fast] analysis time / predicted codec compress time: median 17.186%, max 147.320%

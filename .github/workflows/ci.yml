@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    runs-on: ubuntu-24.04   # gcc/g++ 13, x86-64 with AVX2
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install (default, no torch)
+        run: pip install -e ".[test]"
+      - name: Build native codecs
+        run: make native ARCH=x86-64-v3
+      - name: Tests
+        run: python -m pytest -q
+      - name: CLI round trip
+        run: |
+          head -c 3000000 /usr/share/dict/words > sample.txt 2>/dev/null || python -c "import random;r=random.Random(1);open('sample.txt','w').write(' '.join(r.choice(['alpha','beta','gamma','delta','qzip','compress','verified']) for _ in range(400000)))"
+          qzip compress sample.txt
+          qzip decompress -o sample.out sample.txt.qz
+          cmp sample.txt sample.out

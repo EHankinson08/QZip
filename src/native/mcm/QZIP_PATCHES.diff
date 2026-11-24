@@ -1,0 +1,41 @@
+diff --git a/CM-inl.hpp b/CM-inl.hpp
+index 01d6f2d..7c56a6c 100644
+--- a/CM-inl.hpp
++++ b/CM-inl.hpp
+@@ -126,7 +126,7 @@ inline void CM<kInputs, kUseSSE, HistoryType>::init() {
+     if (kInputs > idx++) binary_profile_.EnableModel(kModelSparse3);
+     if (kInputs > idx++) binary_profile_.EnableModel(kModelSparse4);
+     if (kInputs > idx++) binary_profile_.EnableModel(kModelOrder0);
+-    if (kInputs > idx++) binary_profile_.EnableModel(static_cast<ModelType>(opts_[0]));
++    if (kInputs > idx++) binary_profile_.EnableModel(opts_ ? static_cast<ModelType>(opts_[0]) : kModelOrder6);
+     // binary_profile_ = CMProfile();
+     binary_profile_.SetMatchModelOrder(binary_mm_order);
+     binary_profile_.SetMinLZPLen(lzp_enabled_ ? 0 : kMaxMatch + 1);
+diff --git a/GD.hpp b/GD.hpp
+index 8df8993..c77f569 100644
+--- a/GD.hpp
++++ b/GD.hpp
+@@ -70,7 +70,7 @@ class LinearPredictor {
+ public:
+   template <typename Input>
+   Acc Cost(const Input* inputs, Acc actual) const {
+-    return f_.Cost<Acc>(*this, inputs, actual);
++    return f_.template Cost<Acc>(*this, inputs, actual);
+  }
+ 
+   template <typename Input>
+diff --git a/Util.hpp b/Util.hpp
+index 954404c..80f4879 100644
+--- a/Util.hpp
++++ b/Util.hpp
+@@ -43,8 +43,8 @@
+ #define ALWAYS_INLINE __forceinline
+ #define NO_INLINE __declspec(noinline)
+ #else
+-#define ALWAYS_INLINE __attribute__((always_inline))
+-#define NO_INLINE __declspec(noinline)
++#define ALWAYS_INLINE inline __attribute__((always_inline))
++#define NO_INLINE __attribute__((noinline))
+ #endif
+ 
+ #define no_alias __restrict

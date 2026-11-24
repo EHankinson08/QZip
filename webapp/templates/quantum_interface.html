@@ -1,0 +1,1331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QZip - verified compression</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        .gradient-bg {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+        .card-shadow {
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+        }
+        .quantum-animation {
+            animation: quantum 3s ease-in-out infinite;
+        }
+        @keyframes quantum {
+            0%, 100% { transform: scale(1); opacity: 0.8; }
+            50% { transform: scale(1.1); opacity: 1; }
+        }
+        .drop-zone {
+            border: 3px dashed #cbd5e0;
+            transition: all 0.3s ease;
+        }
+        .drop-zone.dragover {
+            border-color: #667eea;
+            background-color: #f3f4f6;
+        }
+    </style>
+</head>
+<body class="bg-gray-50">
+    <!-- Header -->
+    <nav class="gradient-bg shadow-lg">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex items-center justify-between h-16">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <h1 class="text-white text-2xl font-bold">
+                            <i class="fas fa-atom quantum-animation"></i>
+                            QZip
+                        </h1>
+                    </div>
+                    <div class="ml-10 flex items-baseline space-x-4">
+                        <span class="text-gray-300 text-sm">GPL-3.0 · local</span>
+                    </div>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <span id="connectionStatus" class="text-white text-sm">
+                        <i class="fas fa-circle text-green-400"></i> Connected
+                    </span>
+                    <button id="apiKeyBtn" class="bg-white text-purple-600 px-4 py-2 rounded-md text-sm font-medium hover:bg-gray-100">
+                        <i class="fas fa-key"></i> API Key
+                    </button>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
+        <!-- Statistics Cards -->
+        <div class="px-4 py-6 sm:px-0">
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+                <div class="bg-white rounded-lg card-shadow p-6">
+                    <div class="flex items-center">
+                        <div class="flex-shrink-0 bg-blue-500 rounded-md p-3">
+                            <i class="fas fa-compress text-white text-2xl"></i>
+                        </div>
+                        <div class="ml-4">
+                            <p class="text-sm font-medium text-gray-500">Avg Compression Ratio</p>
+                            <p class="text-2xl font-bold text-gray-900" id="avgRatio">–</p>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="bg-white rounded-lg card-shadow p-6">
+                    <div class="flex items-center">
+                        <div class="flex-shrink-0 bg-green-500 rounded-md p-3">
+                            <i class="fas fa-save text-white text-2xl"></i>
+                        </div>
+                        <div class="ml-4">
+                            <p class="text-sm font-medium text-gray-500">Space Saved</p>
+                            <p class="text-2xl font-bold text-gray-900" id="spaceSaved">–</p>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="bg-white rounded-lg card-shadow p-6">
+                    <div class="flex items-center">
+                        <div class="flex-shrink-0 bg-purple-500 rounded-md p-3">
+                            <i class="fas fa-tachometer-alt text-white text-2xl"></i>
+                        </div>
+                        <div class="ml-4">
+                            <p class="text-sm font-medium text-gray-500">Processing Speed</p>
+                            <p class="text-2xl font-bold text-gray-900" id="processingSpeed">–</p>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="bg-white rounded-lg card-shadow p-6">
+                    <div class="flex items-center">
+                        <div class="flex-shrink-0 bg-yellow-500 rounded-md p-3">
+                            <i class="fas fa-file text-white text-2xl"></i>
+                        </div>
+                        <div class="ml-4">
+                            <p class="text-sm font-medium text-gray-500">Files Processed</p>
+                            <p class="text-2xl font-bold text-gray-900" id="filesProcessed">0</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Compression Interface -->
+            <div class="bg-white rounded-lg card-shadow p-8">
+                <h2 class="text-2xl font-bold text-gray-900 mb-6">
+                    <i class="fas fa-cloud-upload-alt"></i> Compress Files
+                </h2>
+                
+                <!-- Method Selection -->
+                <div class="mb-6">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Compression Method</label>
+                    <select id="compressionMethod" class="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-purple-500 focus:border-purple-500">
+                        <option value="auto" selected>Auto (recommended): QZip's mcm-based engine for text, CSV &amp; logs; a quick file analysis picks the codec, runs only that one (verified)</option>
+                        <option value="auto-max">Max (x18 / CSV structure): smallest output, about 3x slower (verified)</option>
+                        <option value="auto-fast">Auto fast: same prediction, fastest codecs only (verified)</option>
+                    </select>
+                </div>
+                
+                <!-- File Upload Area -->
+                <div id="dropZone" class="drop-zone rounded-lg p-12 text-center cursor-pointer">
+                    <i class="fas fa-cloud-upload-alt text-6xl text-gray-400 mb-4"></i>
+                    <p class="text-xl text-gray-600 mb-2">Drag & drop files here or click to browse</p>
+                    <p class="text-sm text-gray-500">Any file type • runs locally • every result is decoded and sha256-checked before you can download it</p>
+                    <input type="file" id="fileInput" class="hidden" multiple>
+                </div>
+                
+                <!-- File List -->
+                <div id="fileList" class="mt-6 hidden">
+                    <h3 class="text-lg font-semibold text-gray-900 mb-3">Selected Files</h3>
+                    <div id="fileListItems" class="space-y-2"></div>
+                    
+                    <div class="mt-4 flex space-x-4">
+                        <button id="compressBtn" class="gradient-bg text-white px-6 py-3 rounded-md font-medium hover:opacity-90 transition">
+                            <i class="fas fa-compress"></i> Compress All
+                        </button>
+                        <button id="clearBtn" class="bg-gray-200 text-gray-700 px-6 py-3 rounded-md font-medium hover:bg-gray-300 transition">
+                            <i class="fas fa-times"></i> Clear
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- Progress -->
+                <div id="progressSection" class="mt-6 hidden">
+                    <div class="bg-gray-200 rounded-full h-4 overflow-hidden">
+                        <div id="progressBar" class="gradient-bg h-full transition-all duration-500" style="width: 0%"></div>
+                    </div>
+                    <p id="progressText" class="text-sm text-gray-600 mt-2 text-center">Processing...</p>
+                    <div class="text-center mt-3">
+                        <button id="cancelJobBtn" type="button" class="hidden bg-gray-200 text-gray-700 px-4 py-2 rounded-md text-sm font-medium hover:bg-gray-300 transition">
+                            <i class="fas fa-stop"></i> Cancel
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Results Section -->
+            <div id="resultsSection" class="mt-8 hidden">
+                <div class="bg-white rounded-lg card-shadow p-8">
+                    <h2 class="text-2xl font-bold text-gray-900 mb-6">
+                        <i class="fas fa-chart-bar"></i> Compression Results
+                    </h2>
+                    <div id="resultsContainer" class="space-y-4"></div>
+                </div>
+            </div>
+
+            <!-- Folder Compression Section -->
+            <div class="mt-8 bg-white rounded-lg card-shadow p-8">
+                <h2 class="text-2xl font-bold text-gray-900 mb-6">
+                    <i class="fas fa-folder"></i> Compress Folders
+                </h2>
+                
+                <!-- Folder Upload Area -->
+                <div id="folderDropZone" class="drop-zone rounded-lg p-8 text-center cursor-pointer">
+                    <i class="fas fa-folder-open text-6xl text-gray-400 mb-4"></i>
+                    <p class="text-xl text-gray-600 mb-2">Drop folder here or click to browse</p>
+                    <p class="text-sm text-gray-500">Select a folder to compress all files within it</p>
+                    <input type="file" id="folderInput" class="hidden" webkitdirectory multiple>
+                </div>
+                
+                <!-- Folder List -->
+                <div id="folderList" class="mt-6 hidden">
+                    <h3 class="text-lg font-semibold text-gray-900 mb-3">Selected Folder</h3>
+                    <div id="folderListItems" class="space-y-2"></div>
+                    
+                    <div class="mt-4 flex space-x-4">
+                        <button id="compressFolderBtn" class="gradient-bg text-white px-6 py-3 rounded-md font-medium hover:opacity-90 transition">
+                            <i class="fas fa-compress"></i> Compress Folder
+                        </button>
+                        <button id="clearFolderBtn" class="bg-gray-200 text-gray-700 px-6 py-3 rounded-md font-medium hover:bg-gray-300 transition">
+                            <i class="fas fa-times"></i> Clear
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- Folder Progress -->
+                <div id="folderProgressSection" class="mt-6 hidden">
+                    <div class="bg-gray-200 rounded-full h-4 overflow-hidden">
+                        <div id="folderProgressBar" class="gradient-bg h-full transition-all duration-500" style="width: 0%"></div>
+                    </div>
+                    <p id="folderProgressText" class="text-sm text-gray-600 mt-2 text-center">Processing folder...</p>
+                </div>
+            </div>
+
+            <!-- Folder Decompression Section -->
+            <div class="mt-8 bg-white rounded-lg card-shadow p-8">
+                <h2 class="text-2xl font-bold text-gray-900 mb-6">
+                    <i class="fas fa-folder-open"></i> Decompress Folders
+                </h2>
+                <div id="folderDecompressDropZone" class="drop-zone rounded-lg p-8 text-center cursor-pointer">
+                    <i class="fas fa-file-archive text-6xl text-gray-400 mb-4"></i>
+                    <p class="text-xl text-gray-600 mb-2">Drop compressed folder (.qc.gz) file here to decompress</p>
+                    <p class="text-sm text-gray-500">Upload a compressed folder .qc.gz file</p>
+                    <input type="file" id="folderDecompressInput" class="hidden" accept=".qc.gz">
+                </div>
+            </div>
+
+            <!-- Decompression Section -->
+            <div class="mt-8 bg-white rounded-lg card-shadow p-8">
+                <h2 class="text-2xl font-bold text-gray-900 mb-6">
+                    <i class="fas fa-expand"></i> Decompress Files
+                </h2>
+                <div id="decompressDropZone" class="drop-zone rounded-lg p-8 text-center cursor-pointer">
+                    <i class="fas fa-file-archive text-6xl text-gray-400 mb-4"></i>
+                    <p class="text-xl text-gray-600 mb-2">Drop .qz files here to decompress (older .qc / .qc.gz too)</p>
+                    <p class="text-sm text-gray-500">Restores the original bit for bit (sha256-checked)</p>
+                    <input type="file" id="decompressInput" class="hidden" accept=".qz,.qc,.qc.gz">
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- API Key Modal -->
+    <div id="apiKeyModal" class="fixed inset-0 bg-gray-500 bg-opacity-75 hidden z-50">
+        <div class="flex items-center justify-center min-h-screen">
+            <div class="bg-white rounded-lg p-8 max-w-md w-full">
+                <h3 class="text-lg font-bold text-gray-900 mb-4">Enter API Key</h3>
+                <input type="password" id="apiKeyInput" placeholder="API key" 
+                       class="w-full px-4 py-2 border border-gray-300 rounded-md mb-4">
+                <div class="flex space-x-4">
+                    <button id="saveApiKey" class="gradient-bg text-white px-4 py-2 rounded-md flex-1">
+                        Save
+                    </button>
+                    <button id="cancelApiKey" class="bg-gray-200 text-gray-700 px-4 py-2 rounded-md flex-1">
+                        Cancel
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Global variables
+        let selectedFiles = [];
+        let selectedFolder = null;
+        let apiKey = localStorage.getItem('quantumApiKey') || '';
+        
+        // DOM elements
+        const dropZone = document.getElementById('dropZone');
+        const fileInput = document.getElementById('fileInput');
+        const fileList = document.getElementById('fileList');
+        const fileListItems = document.getElementById('fileListItems');
+        const compressBtn = document.getElementById('compressBtn');
+        const clearBtn = document.getElementById('clearBtn');
+        const progressSection = document.getElementById('progressSection');
+        const progressBar = document.getElementById('progressBar');
+        const progressText = document.getElementById('progressText');
+        const cancelJobBtn = document.getElementById('cancelJobBtn');
+        const resultsSection = document.getElementById('resultsSection');
+        const resultsContainer = document.getElementById('resultsContainer');
+        const decompressDropZone = document.getElementById('decompressDropZone');
+        const decompressInput = document.getElementById('decompressInput');
+        const apiKeyModal = document.getElementById('apiKeyModal');
+        const apiKeyBtn = document.getElementById('apiKeyBtn');
+        const apiKeyInput = document.getElementById('apiKeyInput');
+        
+        // Folder compression elements
+        const folderDropZone = document.getElementById('folderDropZone');
+        const folderInput = document.getElementById('folderInput');
+        const folderList = document.getElementById('folderList');
+        const folderListItems = document.getElementById('folderListItems');
+        const compressFolderBtn = document.getElementById('compressFolderBtn');
+        const clearFolderBtn = document.getElementById('clearFolderBtn');
+        const folderProgressSection = document.getElementById('folderProgressSection');
+        const folderProgressBar = document.getElementById('folderProgressBar');
+        const folderProgressText = document.getElementById('folderProgressText');
+        const folderDecompressDropZone = document.getElementById('folderDecompressDropZone');
+        const folderDecompressInput = document.getElementById('folderDecompressInput');
+        
+        // Initialize
+        window.addEventListener('DOMContentLoaded', async () => {
+            // Local mode (default): no API key needed. Server tells us via /api/config.
+            try {
+                const cfg = await (await fetch('/api/config')).json();
+                if (!cfg.auth_required) {
+                    apiKey = 'local-mode';   // placeholder, not a secret; server ignores it in local mode
+                    apiKeyBtn.classList.add('hidden');
+                    updateStats();
+                    return;
+                }
+            } catch (e) { /* fall through to key prompt */ }
+            if (apiKey) {
+                authenticateApi(apiKey);
+            } else {
+                showApiKeyModal();
+            }
+            updateStats();
+        });
+        
+        // API Key handling
+        apiKeyBtn.addEventListener('click', showApiKeyModal);
+        
+        function showApiKeyModal() {
+            apiKeyModal.classList.remove('hidden');
+            apiKeyInput.value = apiKey;
+        }
+        
+        document.getElementById('saveApiKey').addEventListener('click', () => {
+            const key = apiKeyInput.value.trim();
+            if (key) {
+                authenticateApi(key);
+            }
+        });
+        
+        document.getElementById('cancelApiKey').addEventListener('click', () => {
+            apiKeyModal.classList.add('hidden');
+        });
+        
+        async function authenticateApi(key) {
+            try {
+                const response = await fetch('/api/auth', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({api_key: key})
+                });
+                
+                if (response.ok) {
+                    apiKey = key;
+                    localStorage.setItem('quantumApiKey', key);
+                    apiKeyModal.classList.add('hidden');
+                    updateStats();
+                } else {
+                    alert('Invalid API key');
+                }
+            } catch (error) {
+                alert('Authentication failed: ' + error.message);
+            }
+        }
+        
+        // File handling
+        dropZone.addEventListener('click', () => fileInput.click());
+        fileInput.addEventListener('change', handleFileSelect);
+        
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('dragover');
+        });
+        
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.classList.remove('dragover');
+        });
+        
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('dragover');
+            handleFiles(e.dataTransfer.files);
+        });
+        
+        function handleFileSelect(e) {
+            handleFiles(e.target.files);
+        }
+        
+        function handleFiles(files) {
+            selectedFiles = Array.from(files);
+            displayFileList();
+        }
+        
+        function displayFileList() {
+            if (selectedFiles.length === 0) {
+                fileList.classList.add('hidden');
+                return;
+            }
+            
+            fileList.classList.remove('hidden');
+            fileListItems.innerHTML = selectedFiles.map((file, index) => `
+                <div class="flex items-center justify-between p-3 bg-gray-50 rounded-md">
+                    <div class="flex items-center">
+                        <i class="fas fa-file text-gray-400 mr-3"></i>
+                        <span class="text-sm text-gray-700">${file.name}</span>
+                        <span class="text-xs text-gray-500 ml-2">(${formatFileSize(file.size)})</span>
+                    </div>
+                    <button onclick="removeFile(${index})" class="text-red-500 hover:text-red-700">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+            `).join('');
+        }
+        
+        window.removeFile = (index) => {
+            selectedFiles.splice(index, 1);
+            displayFileList();
+        };
+        
+        clearBtn.addEventListener('click', () => {
+            selectedFiles = [];
+            fileInput.value = '';
+            displayFileList();
+        });
+        
+        // Folder compression handling
+        folderDropZone.addEventListener('click', () => folderInput.click());
+        folderInput.addEventListener('change', handleFolderSelect);
+        
+        folderDropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            folderDropZone.classList.add('dragover');
+        });
+        
+        folderDropZone.addEventListener('dragleave', () => {
+            folderDropZone.classList.remove('dragover');
+        });
+        
+        folderDropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            folderDropZone.classList.remove('dragover');
+            handleFolderFiles(e.dataTransfer.files);
+        });
+        
+        function handleFolderSelect(e) {
+            handleFolderFiles(e.target.files);
+        }
+        
+        function handleFolderFiles(files) {
+            console.log('Folder files received:', files.length);
+            if (files.length > 0) {
+                selectedFolder = Array.from(files);
+                console.log('Selected folder files:', selectedFolder);
+                displayFolderList();
+            }
+        }
+        
+        function displayFolderList() {
+            if (!selectedFolder || selectedFolder.length === 0) {
+                folderList.classList.add('hidden');
+                return;
+            }
+            
+            console.log('Displaying folder list for', selectedFolder.length, 'files');
+            
+            folderList.classList.remove('hidden');
+            const totalSize = selectedFolder.reduce((sum, file) => {
+                console.log('File:', file.name, 'Size:', file.size, 'Path:', file.webkitRelativePath);
+                return sum + (file.size || 0);
+            }, 0);
+            
+            // Get folder name from the first file's path
+            let folderName = 'Selected Folder';
+            if (selectedFolder[0] && selectedFolder[0].webkitRelativePath) {
+                const pathParts = selectedFolder[0].webkitRelativePath.split('/');
+                folderName = pathParts[0] || 'Selected Folder';
+            }
+            
+            // Count files by directory level
+            const dirCounts = {};
+            selectedFolder.forEach(file => {
+                if (file.webkitRelativePath) {
+                    const pathParts = file.webkitRelativePath.split('/');
+                    const dir = pathParts.length > 1 ? pathParts[0] : 'Root';
+                    dirCounts[dir] = (dirCounts[dir] || 0) + 1;
+                } else {
+                    dirCounts['Root'] = (dirCounts['Root'] || 0) + 1;
+                }
+            });
+            
+            const dirSummary = Object.entries(dirCounts)
+                .map(([dir, count]) => `${dir}: ${count} files`)
+                .join(', ');
+            
+            console.log('Folder summary:', folderName, totalSize, 'bytes', selectedFolder.length, 'files');
+            
+            folderListItems.innerHTML = `
+                <div class="flex items-center justify-between p-3 bg-gray-50 rounded-md">
+                    <div class="flex items-center">
+                        <i class="fas fa-folder text-blue-400 mr-3"></i>
+                        <div>
+                            <div class="text-sm text-gray-700">${folderName}</div>
+                            <div class="text-xs text-gray-500">${selectedFolder.length} files total • ${formatFileSize(totalSize)}</div>
+                            <div class="text-xs text-gray-400 mt-1">${dirSummary}</div>
+                        </div>
+                    </div>
+                    <button onclick="removeFolder()" class="text-red-500 hover:text-red-700">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+            `;
+        }
+        
+        window.removeFolder = () => {
+            selectedFolder = null;
+            folderInput.value = '';
+            displayFolderList();
+        };
+        
+        clearFolderBtn.addEventListener('click', () => {
+            selectedFolder = null;
+            folderInput.value = '';
+            displayFolderList();
+        });
+        
+        // Folder compression
+        compressFolderBtn.addEventListener('click', async () => {
+            if (!apiKey) {
+                showApiKeyModal();
+                return;
+            }
+            
+            if (!selectedFolder || selectedFolder.length === 0) return;
+            
+            folderProgressSection.classList.remove('hidden');
+            resultsSection.classList.add('hidden');
+            resultsContainer.innerHTML = '';
+            
+            const method = document.getElementById('compressionMethod').value;
+            const totalFiles = selectedFolder.length;
+            let processedFiles = 0;
+            
+            const results = [];
+            const folderName = selectedFolder[0] && selectedFolder[0].webkitRelativePath ? 
+                selectedFolder[0].webkitRelativePath.split('/')[0] : 'Selected Folder';
+            
+            try {
+                folderProgressText.textContent = `Preparing ${totalFiles} files for compression...`;
+                folderProgressBar.style.width = '10%';
+                
+                // Send all files at once to the folder compression endpoint
+                const formData = new FormData();
+                formData.append('method', method);
+                formData.append('folder_name', folderName);
+                
+                // Add all files to form data
+                selectedFolder.forEach(file => {
+                    formData.append('files', file, file.name);
+                });
+                
+                folderProgressText.textContent = `Compressing ${totalFiles} files...`;
+                folderProgressBar.style.width = '50%';
+                
+                const response = await fetch('/api/compress/folder', {
+                    method: 'POST',
+                    headers: {'X-API-Key': apiKey},
+                    body: formData
+                });
+                
+                folderProgressBar.style.width = '90%';
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    folderProgressBar.style.width = '100%';
+                    folderProgressText.textContent = 'Folder compression complete!';
+                    
+                    // Display folder compression result
+                    displayFolderResult(result);
+                    
+                    // Update stats
+                    document.getElementById('filesProcessed').textContent = 
+                        parseInt(document.getElementById('filesProcessed').textContent) + result.files_count;
+                        
+                } else {
+                    const error = await response.json();
+                    alert(`Folder compression failed: ${error.error}`);
+                }
+                    
+            } catch (error) {
+                alert(`Error: ${error.message}`);
+            } finally {
+                setTimeout(() => {
+                    folderProgressSection.classList.add('hidden');
+                }, 2000);
+            }
+        });
+        
+        function groupResultsByDirectory(results) {
+            const grouped = {};
+            results.forEach(result => {
+                const pathParts = result.folder_path.split('/');
+                const dir = pathParts.length > 1 ? pathParts[0] : 'Root';
+                if (!grouped[dir]) grouped[dir] = [];
+                grouped[dir].push(result);
+            });
+            return Object.entries(grouped);
+        }
+        
+        function displayFolderResult(result) {
+            const resultHtml = `
+                <div class="border rounded-lg p-4 border-green-300 bg-green-50">
+                    <div class="mb-4">
+                        <h4 class="font-semibold text-gray-900 text-lg">${result.folder_name}</h4>
+                        <p class="text-sm text-gray-600">
+                            ${result.files_count} files compressed • ${result.total_original_size_formatted} → ${result.total_compressed_size_formatted}
+                            <span class="font-bold text-green-600">(${result.overall_compression_ratio.toFixed(1)}:1)</span>
+                        </p>
+                        <p class="text-xs text-gray-500">
+                            Saved ${((1 - result.total_compressed_size / result.total_original_size) * 100).toFixed(1)}% • ${result.timestamp}
+                        </p>
+                    </div>
+                    
+                    <div class="flex space-x-4">
+                        <button onclick="handleDownload('${result.download_url}')" class="gradient-bg text-white px-4 py-2 rounded-md text-sm hover:opacity-90">
+                            <i class="fas fa-download"></i> Download All Files
+                        </button>
+                        <button onclick="showFolderDetails('${result.folder_id}')" class="bg-blue-500 text-white px-4 py-2 rounded-md text-sm hover:opacity-90">
+                            <i class="fas fa-list"></i> View Details
+                        </button>
+                    </div>
+                </div>
+            `;
+            
+            resultsContainer.insertAdjacentHTML('beforeend', resultHtml);
+            resultsSection.classList.remove('hidden');
+        }
+        
+        function showFolderDetails(folderId) {
+            // This would show detailed file-by-file results
+            // For now, just show a simple message
+            alert('Folder details: All files compressed and verified.');
+        }
+        
+        // Folder decompression
+        folderDecompressDropZone.addEventListener('click', () => folderDecompressInput.click());
+        folderDecompressInput.addEventListener('change', handleFolderDecompress);
+        
+        folderDecompressDropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            folderDecompressDropZone.classList.add('dragover');
+        });
+        
+        folderDecompressDropZone.addEventListener('dragleave', () => {
+            folderDecompressDropZone.classList.remove('dragover');
+        });
+        
+        folderDecompressDropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            folderDecompressDropZone.classList.remove('dragover');
+            handleFolderDecompressFiles(e.dataTransfer.files);
+        });
+        
+        async function handleFolderDecompress(e) {
+            handleFolderDecompressFiles(e.target.files);
+        }
+        
+        async function handleFolderDecompressFiles(files) {
+            if (!apiKey) {
+                showApiKeyModal();
+                return;
+            }
+            
+            for (const file of files) {
+                if (!file.name.endsWith('.qc.gz')) {
+                    alert(`${file.name} is not a compressed folder .qc.gz file`);
+                    continue;
+                }
+                
+                try {
+                    folderProgressSection.classList.remove('hidden');
+                    folderProgressText.textContent = `Decompressing folder ${file.name}...`;
+                    folderProgressBar.style.width = '50%';
+                    
+                    const formData = new FormData();
+                    formData.append('folder', file);
+                    
+                    const response = await fetch('/api/decompress/folder', {
+                        method: 'POST',
+                        headers: {'X-API-Key': apiKey},
+                        body: formData
+                    });
+                    
+                    folderProgressBar.style.width = '100%';
+                    
+                    if (response.ok) {
+                        const result = await response.json();
+                        folderProgressText.textContent = 'Folder decompression complete!';
+                        await downloadFile(result.download_url);
+                    } else {
+                        const error = await response.json();
+                        alert(`Folder decompression failed: ${error.error}`);
+                    }
+                    
+                } catch (error) {
+                    alert(`Error: ${error.message}`);
+                } finally {
+                    setTimeout(() => {
+                        folderProgressSection.classList.add('hidden');
+                    }, 2000);
+                }
+            }
+        }
+        
+        // Compression
+        // Progress tracking variables
+        let activeProgressInterval = null;
+        let currentJobId = null;
+        let activeJobId = null;
+        let activeFilename = null;
+        let pendingResult = null;
+        let activeDecompressionInterval = null;
+        
+        // Function to poll for progress
+        function startProgressPolling(jobId, filename, fileSize) {
+            currentJobId = jobId;
+            
+            // Check immediately if already complete
+            checkProgress();
+            
+            // Poll every 1 second
+            activeProgressInterval = setInterval(checkProgress, 1000);
+            
+            async function checkProgress() {
+                try {
+                    const response = await fetch(`/api/progress/${jobId}`);
+                    if (response.ok) {
+                        const progress = await response.json();
+                        updateProgressDisplay(progress, filename, fileSize);
+                        
+                        // Stop polling if complete or error
+                        if (progress.status === 'complete' || progress.status === 'error' || progress.status === 'timeout' || progress.status === 'cancelled') {
+                            stopProgressPolling(progress.status === 'complete');
+                        }
+                    }
+                } catch (error) {
+                    console.error('Progress update failed:', error);
+                }
+            }
+        }
+        
+        function stopProgressPolling(isComplete = false) {
+            if (activeProgressInterval) {
+                clearInterval(activeProgressInterval);
+                activeProgressInterval = null;
+            }
+            
+            // If complete, display the pending result (only if not already displayed)
+            if (isComplete && pendingResult) {
+                console.log('Compression complete! Result already displayed, updating status...');
+                // Result was already displayed, just update the status
+                // Clear pending data
+                pendingResult = null;
+                activeJobId = null;
+                activeFilename = null;
+            }
+            
+            currentJobId = null;
+        }
+        
+        function updateProgressDisplay(progress, filename, fileSize) {
+            // Update progress bar
+            progressBar.style.width = `${progress.progress}%`;
+            
+            // Build status message
+            let statusHTML = '<div class="text-center">';
+            
+            // Status
+            if (progress.status === 'starting') {
+                statusHTML += '<div class="text-lg font-semibold">🚀 Starting compression...</div>';
+            } else if (progress.status === 'compressing') {
+                statusHTML += `<div class="text-lg font-semibold">⚡ Compressing ${filename}...</div>`;
+            } else if (progress.status === 'finalizing') {
+                statusHTML += '<div class="text-lg font-semibold">✨ Finalizing...</div>';
+            } else if (progress.status === 'complete') {
+                statusHTML += '<div class="text-lg font-semibold text-green-600">✅ Complete!</div>';
+            } else if (progress.status === 'cancelled') {
+                statusHTML += '<div class="text-lg font-semibold text-gray-700">⏹ Cancelled</div>';
+            } else if (progress.status === 'timeout' || progress.status === 'error') {
+                statusHTML += `<div class="text-lg font-semibold text-red-600">❌ ${progress.error || progress.status}</div>`;
+            }
+            
+            // Progress percentage
+            statusHTML += `<div class="text-3xl font-bold text-purple-600 mt-2">${progress.progress}%</div>`;
+            
+            // Time remaining
+            if (progress.time_remaining && progress.status === 'compressing') {
+                const minutes = Math.floor(progress.time_remaining / 60);
+                const seconds = Math.floor(progress.time_remaining % 60);
+                if (minutes > 0) {
+                    statusHTML += `<div class="text-sm text-gray-600 mt-2">⏱️ ~${minutes}m ${seconds}s remaining</div>`;
+                } else {
+                    statusHTML += `<div class="text-sm text-gray-600 mt-2">⏱️ ~${seconds}s remaining</div>`;
+                }
+            }
+            
+            // Speed
+            if (progress.speed_mbps && progress.speed_mbps > 0) {
+                statusHTML += `<div class="text-sm text-gray-600 mt-1">⚡ ${progress.speed_mbps.toFixed(2)} MB/s</div>`;
+            }
+            
+            // Elapsed time
+            if (progress.elapsed_time && progress.elapsed_time > 0) {
+                const minutes = Math.floor(progress.elapsed_time / 60);
+                const seconds = Math.floor(progress.elapsed_time % 60);
+                if (minutes > 0) {
+                    statusHTML += `<div class="text-xs text-gray-500 mt-1">Elapsed: ${minutes}m ${seconds}s</div>`;
+                } else {
+                    statusHTML += `<div class="text-xs text-gray-500 mt-1">Elapsed: ${seconds}s</div>`;
+                }
+            }
+            
+            // Warning for long compressions
+            if (progress.estimated_time && progress.estimated_time > 300) {
+                statusHTML += '<div class="text-xs text-yellow-600 mt-2">⚠️ Large file - keep this window open</div>';
+            }
+            
+            statusHTML += '</div>';
+            
+            progressText.innerHTML = statusHTML;
+        }
+        
+        // Decompression progress functions
+        function startDecompressionProgress(jobId, filename, fileSize) {
+            // Check immediately if already complete
+            checkDecompressionProgress();
+            
+            // Poll every 1 second
+            activeDecompressionInterval = setInterval(checkDecompressionProgress, 1000);
+            
+            async function checkDecompressionProgress() {
+                try {
+                    const response = await fetch(`/api/progress/${jobId}`);
+                    if (response.ok) {
+                        const progress = await response.json();
+                        updateDecompressionDisplay(progress, filename, fileSize);
+                        
+                        // Stop polling if complete or error
+                        if (progress.status === 'complete' || progress.status === 'error') {
+                            stopDecompressionProgress();
+                        }
+                    }
+                } catch (error) {
+                    console.error('Progress update failed:', error);
+                }
+            }
+        }
+        
+        function stopDecompressionProgress() {
+            if (activeDecompressionInterval) {
+                clearInterval(activeDecompressionInterval);
+                activeDecompressionInterval = null;
+            }
+        }
+        
+        function updateDecompressionDisplay(progress, filename, fileSize) {
+            // Update progress bar
+            progressBar.style.width = `${progress.progress}%`;
+            
+            // Build status message
+            let statusHTML = '<div class="text-center">';
+            
+            // Status
+            if (progress.status === 'starting') {
+                statusHTML += '<div class="text-lg font-semibold">🔄 Starting decompression...</div>';
+            } else if (progress.status === 'decompressing') {
+                statusHTML += `<div class="text-lg font-semibold">🔄 Decompressing ${filename}...</div>`;
+            } else if (progress.status === 'complete') {
+                statusHTML += '<div class="text-lg font-semibold text-green-600">✅ Decompression Complete!</div>';
+            } else if (progress.status === 'error') {
+                statusHTML += `<div class="text-lg font-semibold text-red-600">❌ Error: ${progress.error}</div>`;
+            }
+            
+            // Progress percentage
+            statusHTML += `<div class="text-3xl font-bold text-purple-600 mt-2">${progress.progress}%</div>`;
+            
+            // Elapsed time
+            if (progress.elapsed_time && progress.elapsed_time > 0) {
+                const minutes = Math.floor(progress.elapsed_time / 60);
+                const seconds = Math.floor(progress.elapsed_time % 60);
+                if (minutes > 0) {
+                    statusHTML += `<div class="text-xs text-gray-500 mt-1">Elapsed: ${minutes}m ${seconds}s</div>`;
+                } else {
+                    statusHTML += `<div class="text-xs text-gray-500 mt-1">Elapsed: ${seconds}s</div>`;
+                }
+            }
+            
+            // Message
+            if (progress.message) {
+                statusHTML += `<div class="text-sm text-gray-600 mt-2">${progress.message}</div>`;
+            }
+            
+            statusHTML += '</div>';
+            
+            progressText.innerHTML = statusHTML;
+        }
+        
+        async function waitForDecompression(jobId) {
+            return new Promise((resolve) => {
+                const checkInterval = setInterval(async () => {
+                    try {
+                        const response = await fetch(`/api/progress/${jobId}`);
+                        if (response.ok) {
+                            const progress = await response.json();
+                            if (progress.status === 'complete' || progress.status === 'error') {
+                                clearInterval(checkInterval);
+                                resolve(progress);
+                            }
+                        }
+                    } catch (error) {
+                        clearInterval(checkInterval);
+                        resolve({status: 'error', error: error.message});
+                    }
+                }, 1000);
+            });
+        }
+        
+        function showCancelButton(show) {
+            if (!cancelJobBtn) return;
+            if (show) cancelJobBtn.classList.remove('hidden');
+            else cancelJobBtn.classList.add('hidden');
+        }
+
+        async function cancelActiveJob() {
+            if (!currentJobId) return;
+            const id = currentJobId;
+            try {
+                await fetch(`/api/jobs/${id}/cancel`, {method: 'POST', headers: apiKey ? {'X-API-Key': apiKey} : {}});
+            } catch (e) {
+                console.error('Cancel failed:', e);
+            }
+        }
+
+        if (cancelJobBtn) {
+            cancelJobBtn.addEventListener('click', async () => {
+                cancelJobBtn.disabled = true;
+                await cancelActiveJob();
+                cancelJobBtn.disabled = false;
+            });
+        }
+
+        window.addEventListener('pagehide', () => {
+            if (currentJobId && navigator.sendBeacon) {
+                navigator.sendBeacon(`/api/jobs/${currentJobId}/cancel`);
+            }
+        });
+
+        function waitForCompression(jobId) {
+            return new Promise((resolve) => {
+                const tick = async () => {
+                    try {
+                        const response = await fetch(`/api/progress/${jobId}`);
+                        if (!response.ok) {
+                            if (response.status === 404) {
+                                setTimeout(tick, 500);
+                                return;
+                            }
+                            resolve({status: 'error', error: `Progress failed (${response.status})`});
+                            return;
+                        }
+                        const progress = await response.json();
+                        updateProgressDisplay(progress, progress.filename || activeFilename, progress.original_size);
+                        if (progress.status === 'complete' || progress.status === 'error' || progress.status === 'timeout' || progress.status === 'cancelled') {
+                            resolve(progress);
+                            return;
+                        }
+                    } catch (error) {
+                        // Keep polling through transient network errors; the job may still be running.
+                        console.error('Progress update failed:', error);
+                    }
+                    setTimeout(tick, 1000);
+                };
+                tick();
+            });
+        }
+
+        compressBtn.addEventListener('click', async () => {
+            if (!apiKey) {
+                showApiKeyModal();
+                return;
+            }
+
+            if (selectedFiles.length === 0) return;
+
+            progressSection.classList.remove('hidden');
+            resultsSection.classList.add('hidden');
+            resultsContainer.innerHTML = '';
+
+            const method = document.getElementById('compressionMethod').value;
+            const results = [];
+
+            for (const file of selectedFiles) {
+                try {
+                    progressBar.style.width = '5%';
+                    showCancelButton(true);
+                    progressText.innerHTML = `
+                        <div class="text-center">
+                            <div class="text-lg font-semibold">🚀 Starting compression...</div>
+                            <div class="text-sm text-gray-600 mt-2">${file.name} (${formatFileSize(file.size)})</div>
+                            <div class="text-sm text-gray-500 mt-1">Uploading file...</div>
+                        </div>
+                    `;
+
+                    const formData = new FormData();
+                    formData.append('file', file);
+                    formData.append('method', method);
+                    formData.append('async', '1');
+
+                    const response = await fetch('/api/compress', {
+                        method: 'POST',
+                        headers: {'X-API-Key': apiKey, 'X-QZip-Async': '1'},
+                        body: formData
+                    });
+
+                    const payload = await response.json().catch(() => ({error: `HTTP ${response.status}`}));
+
+                    if (payload.success && !payload.accepted) {
+                        // Sync / wait=1 response (backward compatible)
+                        results.push(payload);
+                        progressBar.style.width = '100%';
+                        updateProgressDisplay({status: 'complete', progress: 100, elapsed_time: payload.compression_time, speed_mbps: payload.compression_speed_mbps}, file.name, file.size);
+                        resultsSection.classList.remove('hidden');
+                        displayResult(payload);
+                        continue;
+                    }
+
+                    if (!response.ok && !payload.job_id) {
+                        results.push({error: payload.error || `HTTP ${response.status}`, filename: file.name});
+                        resultsSection.classList.remove('hidden');
+                        displayResult({error: payload.error || `HTTP ${response.status}`, filename: file.name});
+                        continue;
+                    }
+
+                    currentJobId = payload.job_id;
+                    activeJobId = payload.job_id;
+                    activeFilename = file.name;
+                    startProgressPolling(payload.job_id, file.name, file.size);
+                    const final = await waitForCompression(payload.job_id);
+                    stopProgressPolling(final.status === 'complete');
+                    currentJobId = null;
+
+                    if (final.status === 'complete' && (final.result || final.success)) {
+                        const result = final.result || final;
+                        results.push(result);
+                        resultsSection.classList.remove('hidden');
+                        displayResult(result);
+                    } else if (final.status === 'cancelled') {
+                        results.push({error: 'Cancelled', filename: file.name});
+                        resultsSection.classList.remove('hidden');
+                        displayResult({error: 'Cancelled', filename: file.name});
+                    } else {
+                        const err = final.error || 'Compression failed';
+                        results.push({error: err, filename: file.name});
+                        resultsSection.classList.remove('hidden');
+                        displayResult({error: err, filename: file.name});
+                    }
+                } catch (error) {
+                    results.push({error: error.message, filename: file.name});
+                    displayResult({error: error.message, filename: file.name});
+                    resultsSection.classList.remove('hidden');
+                } finally {
+                    showCancelButton(false);
+                    progressSection.classList.add('hidden');
+                }
+            }
+
+            const successCount = results.filter(r => r.success).length;
+            document.getElementById('filesProcessed').textContent =
+                parseInt(document.getElementById('filesProcessed').textContent) + successCount;
+        });
+
+        function displayResult(result) {
+            const resultHtml = `
+                <div class="border rounded-lg p-4 ${result.error ? 'border-red-300 bg-red-50' : 'border-green-300 bg-green-50'}">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <h4 class="font-semibold text-gray-900">${result.original_filename || result.filename}</h4>
+                            ${result.success ? `
+                                <p class="text-sm text-gray-600">
+                                    ${result.original_size_formatted} → ${result.compressed_size_formatted}
+                                    <span class="font-bold text-green-600">(${result.compression_ratio.toFixed(1)}:1)</span>
+                                </p>
+                                <p class="text-xs text-gray-500">
+                                    Saved ${result.space_saved_percent}% • ${result.compression_time}s
+                                    ${result.detected_type ? ` • type: ${result.detected_type} → ${result.route_method || result.method}` : ''}
+                                </p>
+                            ` : `
+                                <p class="text-sm text-red-600">${result.error}</p>
+                            `}
+                        </div>
+                        ${result.success ? `
+                            <button onclick="handleDownload('${result.download_url}')" class="gradient-bg text-white px-4 py-2 rounded-md text-sm hover:opacity-90">
+                                <i class="fas fa-download"></i> Download
+                            </button>
+                        ` : ''}
+                    </div>
+                </div>
+            `;
+            
+            resultsContainer.insertAdjacentHTML('beforeend', resultHtml);
+        }
+        
+        // Decompression
+        decompressDropZone.addEventListener('click', () => decompressInput.click());
+        decompressInput.addEventListener('change', handleDecompress);
+        
+        decompressDropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            decompressDropZone.classList.add('dragover');
+        });
+        
+        decompressDropZone.addEventListener('dragleave', () => {
+            decompressDropZone.classList.remove('dragover');
+        });
+        
+        decompressDropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            decompressDropZone.classList.remove('dragover');
+            handleDecompressFiles(e.dataTransfer.files);
+        });
+        
+        async function handleDecompress(e) {
+            handleDecompressFiles(e.target.files);
+        }
+        
+        async function handleDecompressFiles(files) {
+            if (!apiKey) {
+                showApiKeyModal();
+                return;
+            }
+            
+            for (const file of files) {
+                if (!file.name.endsWith('.qz') && !file.name.endsWith('.qc') && !file.name.endsWith('.qc.gz')) {
+                    alert(`${file.name} is not a QZip file (.qz, .qc or .qc.gz)`);
+                    continue;
+                }
+                
+                try {
+                    progressSection.classList.remove('hidden');
+                    progressBar.style.width = '5%';
+                    progressText.innerHTML = `
+                        <div class="text-center">
+                            <div class="text-lg font-semibold">🔄 Starting decompression...</div>
+                            <div class="text-sm text-gray-600 mt-2">${file.name} (${formatFileSize(file.size)})</div>
+                            <div class="text-sm text-gray-500 mt-1">Uploading file...</div>
+                        </div>
+                    `;
+                    
+                    const formData = new FormData();
+                    formData.append('file', file);
+                    
+                    const response = await fetch('/api/decompress', {
+                        method: 'POST',
+                        headers: {'X-API-Key': apiKey},
+                        body: formData
+                    });
+                    
+                    if (response.ok) {
+                        const result = await response.json();
+                        
+                        // Start progress tracking if we got a job_id
+                        if (result.job_id) {
+                            // Start polling for progress
+                            startDecompressionProgress(result.job_id, file.name, file.size);
+                            
+                            // Wait for completion
+                            await waitForDecompression(result.job_id);
+                            
+                            // Download the file
+                            await downloadFile(result.download_url);
+                        }
+                    } else {
+                        const error = await response.json();
+                        alert(`Decompression failed: ${error.error}`);
+                    }
+                    
+                } catch (error) {
+                    alert(`Error: ${error.message}`);
+                } finally {
+                    stopDecompressionProgress();
+                    progressSection.classList.add('hidden');
+                }
+            }
+        }
+        
+        // Stats update
+        async function updateStats() {
+            if (!apiKey) return;
+            
+            try {
+                const response = await fetch('/api/stats', {
+                    headers: {'X-API-Key': apiKey}
+                });
+                
+                if (response.ok) {
+                    const stats = await response.json();
+                    // Update UI with stats if available
+                    if (stats.average_compression_ratio) {
+                        document.getElementById('avgRatio').textContent = 
+                            stats.average_compression_ratio.toFixed(1) + ':1';
+                    }
+                    
+                    // Update Space Saved percentage
+                    if (stats.space_saved_percentage !== undefined) {
+                        document.getElementById('spaceSaved').textContent = 
+                            stats.space_saved_percentage.toFixed(1) + '%';
+                    }
+                    
+                    // Update Files Processed count
+                    if (stats.total_compressions !== undefined) {
+                        document.getElementById('filesProcessed').textContent = 
+                            stats.total_compressions;
+                    }
+                    
+                    // Calculate and update Processing Speed from recent jobs
+                    if (stats.recent_jobs && stats.recent_jobs.length > 0) {
+                        let totalSpeed = 0;
+                        let speedCount = 0;
+                        
+                        stats.recent_jobs.forEach(job => {
+                            // Look for compression_speed_mbps in recent jobs
+                            if (job.compression_speed_mbps) {
+                                totalSpeed += job.compression_speed_mbps;
+                                speedCount++;
+                            }
+                        });
+                        
+                        if (speedCount > 0) {
+                            const avgSpeed = totalSpeed / speedCount;
+                            
+                            // Format speed appropriately
+                            if (avgSpeed >= 1000) {
+                                document.getElementById('processingSpeed').textContent = 
+                                    (avgSpeed / 1000).toFixed(1) + ' GB/s';
+                            } else {
+                                document.getElementById('processingSpeed').textContent = 
+                                    avgSpeed.toFixed(1) + ' MB/s';
+                            }
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error('Stats update failed:', error);
+            }
+        }
+        
+        // Utility functions
+        async function handleDownload(url) {
+            await downloadFile(url);
+        }
+        
+        async function downloadFile(url) {
+            try {
+                console.log('Download function called with URL:', url);
+                
+                if (!apiKey) {
+                    console.log('No API key found, showing alert');
+                    alert('Please authenticate first');
+                    return;
+                }
+                
+                // Add API key to URL
+                const downloadUrl = url + '?api_key=' + encodeURIComponent(apiKey);
+                console.log('Full download URL:', downloadUrl);
+                
+                // Method: Fetch as blob and create download link
+                // This works reliably with ngrok and remote servers
+                console.log('Fetching file as blob...');
+                const response = await fetch(downloadUrl);
+                
+                if (!response.ok) {
+                    throw new Error(`Download failed: ${response.status} ${response.statusText}`);
+                }
+                
+                // Get filename from Content-Disposition header or use default
+                let filename = 'download';
+                const contentDisposition = response.headers.get('Content-Disposition');
+                if (contentDisposition) {
+                    const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+                    if (filenameMatch && filenameMatch[1]) {
+                        filename = filenameMatch[1].replace(/['"]/g, '');
+                    }
+                }
+                
+                console.log('Creating blob...');
+                const blob = await response.blob();
+                console.log('Blob created, size:', blob.size);
+                
+                // Create a blob URL and trigger download
+                const blobUrl = window.URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.href = blobUrl;
+                link.download = filename;
+                link.style.display = 'none';
+                document.body.appendChild(link);
+                
+                console.log('Triggering download for:', filename);
+                link.click();
+                
+                // Cleanup
+                setTimeout(() => {
+                    document.body.removeChild(link);
+                    window.URL.revokeObjectURL(blobUrl);
+                    console.log('Download cleanup complete');
+                }, 100);
+                
+                console.log('Download triggered successfully');
+                
+            } catch (error) {
+                console.error('Download failed:', error);
+                alert(`Download failed: ${error.message}`);
+            }
+        }
+        
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+        
+        // Auto-refresh stats
+        setInterval(updateStats, 30000);
+    </script>
+</body>
+</html>

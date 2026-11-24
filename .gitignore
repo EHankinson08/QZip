@@ -1,0 +1,59 @@
+# Secrets / config
+.env
+.env.*
+*.key
+*.pem
+ADMIN_CREDENTIALS_SETUP.md
+API_KEY_MANAGER_SETUP.md
+ACCESS_INFO.md
+# Data / models / artifacts (ship as release assets or LFS, never in tree)
+*.pkl
+*.db
+*.nii
+*.nii.gz
+*.qc
+*.qc.gz
+*.jneural
+*.nvis
+rl_compression_model.pkl
+loghub_datasets/
+storage/
+uploads/
+downloads/
+test data/
+test_data/
+datasets/
+# Env / build
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.log
+logs/
+.elasticbeanstalk/
+.ebextensions/
+.platform/
+*.zip
+*.tar.gz
+# OS
+.DS_Store
+# native build outputs (make native)
+src/native/obj/
+src/native/libqznative.so
+src/native/qzcm
+src/native/qtyp
+src/native/qzlpaq
+src/native/EDITION
+dist/
+# qzcore build outputs
+src/qzcore/.obj/
+src/qzcore/qzc
+src/qzcore/qzb
+src/qzcore/qtyp
+src/qzcore/out/
+src/native/qzmf
+
+# web app runtime outputs
+static/
+*.qz
+.pytest_cache/

@@ -1,0 +1,5 @@
+[max] router    files 53: best 42 (79%), within 1% 46 (87%), mean loss 0.685%, worst 13.34% (med_100015_time2_t1ce-t1.nii)
+[max] verified  files 53: best 48 (91%), within 1% 52 (98%), mean loss 0.279%, worst 13.34% (med_100015_time2_t1ce-t1.nii)
+[max] verifier ran on 27 files; added time / full compress of the final codec: median 5.44%, max 12.68% (med_100026_time2_t1ce.nii); verified pick unmeasured on 0
+[fast] router    files 53: best 47 (89%), within 1% 52 (98%), mean loss 0.060%, worst 1.42% (log_Apache.log)
+[fast] verified  files 53: best 47 (89%), within 1% 52 (98%), mean loss 0.060%, worst 1.42% (log_Apache.log)

@@ -1,0 +1,1 @@
+${CXX:-g++} -DNDEBUG -O3 -fomit-frame-pointer -msse2 -std=c++11 -fpermissive -Wno-changes-meaning -w -D_FILE_OFFSET_BITS=64 ${QZFLAGS} -o ${OUT:-mcm} Archive.cpp Huffman.cpp MCM.cpp Memory.cpp Util.cpp Compressor.cpp File.cpp LZ.cpp Tests.cpp -lpthread

@@ -1,0 +1,4 @@
+[max] router    files 12: best 10 (83%), within 1% 11 (92%), mean loss 0.180%, worst 1.18% (h_airports.csv)
+[max] verified  files 12: best 10 (83%), within 1% 11 (92%), mean loss 0.180%, worst 1.18% (h_airports.csv)
+[fast] router    files 12: best 11 (92%), within 1% 12 (100%), mean loss 0.016%, worst 0.19% (h_pystdlib.txt)
+[fast] verified  files 12: best 11 (92%), within 1% 12 (100%), mean loss 0.016%, worst 0.19% (h_pystdlib.txt)
