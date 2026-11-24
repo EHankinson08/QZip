@@ -1,12 +1,14 @@
-"""qzip command line.
+"""QZip — Quick Zip command line.
 
-  qzip compress <file> [-o out.qz] [--max] [--mode auto|auto-max|auto-fast|fast|max|ultra|legacy|hybrid|text]
+  qzip compress <file> [-o out.qz] [--quick] [--classic] [--deep] [--fast] [--max]
+                [--mode quick|classic|deep|auto|auto-max|auto-fast|fast|max|ultra|legacy|hybrid|text]
                 [--codec NAME]
-        auto (default)  balanced: the GPL mcm fork (qzmf = src/engine_mcmfork, mcm -q11 with CSV + text contexts) for
-                        text / CSV / logs / binaries; predicted exceptions (CSV wider than 256 fields -> x18 / qzs,
-                        NIfTI -> qzm, incompressible -> stored)
-        --max           = --mode auto-max: smallest output from QZip's own codecs (x18 = qzc2 CM, qzs CSV/log
-                        transform, qzm NIfTI); about 3x slower than auto on text, often slower still on CSV
+        --quick (default)  Quick: everyday qze -2. Beats xz -9 / 7z -9 / brotli -11 on a 719 MB mix at ~50 MB/s
+        --classic          Classic: the launch method (mcm fork router / x18 exceptions)
+        --deep             Deep: highest ratio (qze -3 for now; looped-transformer later)
+        auto               alias of --classic
+        --max              = --mode auto-max: smallest output from QZip's own codecs (x18 = qzc2 CM, qzs CSV/log
+                        transform, qzm NIfTI); about 3x slower than classic on text, often slower still on CSV
         auto-fast       same analysis, among the fast codecs (qzb, zstd, stored)
         --codec NAME    override the prediction (qzmf, qzc2, qzc2_lean, qzs, qzm, qzb, qzb_w0, zstd, xz, stored)
         --ram-mb MB     RAM budget (default 3/4 of RAM): qzmf drops its level (11: ~6 GB, 10: ~3 GB), qzc2 -> lean
@@ -43,11 +45,12 @@ def _mode(a):
         os.environ["QZIP_TIME_BUDGET"] = str(a.time_budget)
     if getattr(a, "threads", None):
         os.environ["QZIP_TIER_THREADS"] = str(a.threads)
-    tiers = [t for t in ("fast", "balanced", "strong", "smart") if getattr(a, t, False)]
+    tiers = [t for t in ("quick", "classic", "deep", "fast", "balanced", "strong", "smart") if getattr(a, t, False)]
     if len(tiers) > 1 or (tiers and (getattr(a, "max", False) or a.mode != DEFAULT_MODE)):
-        sys.exit("qzip: pick one of --fast / --balanced / --strong / --smart / --max / --mode")
+        sys.exit("qzip: pick one of --quick / --classic / --deep / --fast / --balanced / --strong / --smart / --max / --mode")
     if tiers:
-        return {"fast": "tier-fast", "balanced": "tier-balanced", "strong": "auto", "smart": "smart"}[tiers[0]]
+        return {"quick": "quick", "classic": "classic", "deep": "deep",
+                "fast": "tier-fast", "balanced": "tier-balanced", "strong": "auto", "smart": "smart"}[tiers[0]]
     if getattr(a, "max", False):
         if a.mode not in (DEFAULT_MODE, "auto-max"):
             sys.exit("qzip: --max is --mode auto-max; do not combine it with another --mode")
@@ -65,10 +68,13 @@ def _write(path, data, force):
         f.write(data)
 
 def _tier_args(p):
-    g = p.add_argument_group("everyday tiers")
+    g = p.add_argument_group("modes")
+    g.add_argument("--quick", action="store_true", help="Quick (default): everyday qze -2, xz-class or better size at tens of MB/s")
+    g.add_argument("--classic", action="store_true", help="Classic: the launch method (mcm-fork router / x18 exceptions)")
+    g.add_argument("--deep", action="store_true", help="Deep: highest ratio (qze -3 now; looped-transformer later)")
     g.add_argument("--fast", action="store_true", help="fast tier: zstd-class speed, CSV column transform + zstd")
-    g.add_argument("--balanced", action="store_true", help="balanced tier: xz-class size or better at 50x+ xz speed")
-    g.add_argument("--strong", action="store_true", help="strong tier = the default engine (mcm fork + QZip models)")
+    g.add_argument("--balanced", action="store_true", help="same engine as --quick (qze -2)")
+    g.add_argument("--strong", action="store_true", help="same engine as --classic (mcm fork + QZip models)")
     g.add_argument("--smart", action="store_true", help="pick the tier from file size/type and --goal")
     g.add_argument("--goal", choices=("everyday", "open-often", "archive"), help="for --smart (default everyday)")
     g.add_argument("--time-budget", type=float, help="--smart: seconds allowed for compress + decompress (default 10)")
@@ -228,7 +234,7 @@ def cmd_web(a):
     return web_main(host=a.host, port=a.port, api_port=a.api_port)
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="qzip", description="QZip verified compression (GPL-3.0-or-later)")
+    ap = argparse.ArgumentParser(prog="qzip", description="QZip — Quick Zip (verified compression, GPL-3.0-or-later)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("compress"); p.add_argument("file"); p.add_argument("-o", "--output")
     p.add_argument("--mode", choices=MODES, default=DEFAULT_MODE); p.add_argument("-f", "--force", action="store_true")

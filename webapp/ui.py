@@ -5,6 +5,7 @@ Talks to the local API server (webapp/api.py); every result is verified byte-exa
 from flask import Flask, request, jsonify, render_template, send_file, session, Response
 from flask_cors import CORS
 from qzip.container import unpack, strip_ext
+from src.safe_compress import DEFAULT_MODE
 from qzip.identity import (
     attach_identity,
     clean_basename,
@@ -347,7 +348,7 @@ def compress_file():
         if file.filename == '':
             return jsonify({'error': 'No file selected'}), 400
 
-        method = request.form.get('mode') or request.form.get('method', 'auto')
+        method = request.form.get('mode') or request.form.get('method', DEFAULT_MODE)
         from werkzeug.utils import secure_filename
         from qzip.jobs import get_manager, compress_timeout_sec
 

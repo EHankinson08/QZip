@@ -35,7 +35,7 @@ QZMF_BIN = os.environ.get("QZMF_BIN", os.path.join(HERE, "native", "qzmf" + (".e
 _EXE = ".exe" if os.name == "nt" else ""
 QZE_BIN = os.environ.get("QZE_BIN", os.path.join(HERE, "native", "qze" + _EXE))   # everyday tiers (src/native/everyday)
 CODECS = ("qzmf", "qzc2", "qzc2_text", "qzc2_lean", "qzc2_text_lean", "qzs", "qzm", "qzb", "qzb_w0", "zstd", "xz", "stored",
-          "qze_fast", "qze_balanced", "qzpar")
+          "qze_fast", "qze_balanced", "qze_max", "qzpar")
 # Everyday tiers (bench/everyday/RESULTS.md):
 #   qze_fast      CSV column transform + zstd, block-parallel: zstd-class speed, smaller than zstd -3 on every file tested
 #   qze_balanced  CSV column transform (variant picked on a head sample) + libbsc BWT/static QLFC on 8 MB parallel
@@ -273,8 +273,12 @@ def predict(f, objective="max", ram_mb=None):
         return "stored", f"already compressed ({f['magic'] or 'entropy %.2f b/B, zlib trial %.3f' % (f['h0'], f['trial'])})"
     if objective == "tier-fast":
         return "qze_fast", f"{k}: fast tier (CSV column transform + zstd, parallel blocks)"
-    if objective == "tier-balanced":
-        return "qze_balanced", f"{k}: balanced tier (CSV column transform + BWT / zstd, parallel blocks)"
+    if objective in ("tier-balanced", "quick"):
+        return "qze_balanced", f"{k}: Quick (CSV column transform + BWT / zstd, parallel blocks)"
+    if objective in ("tier-max", "deep"):
+        return "qze_max", f"{k}: Deep (qze max; looped-transformer placeholder)"
+    if objective == "classic":
+        return predict(f, "balanced", ram_mb)
     if objective == "smart":
         tier, why = smart_tier(f, ram_mb=ram_mb)
         if tier == "strong":
@@ -427,8 +431,9 @@ def _tier_threads():
     return int(v) if v.isdigit() and int(v) > 0 else min(8, free_cores())
 
 def encode(codec, data, ram_mb=None):
-    if codec in ("qze_fast", "qze_balanced"):
-        return _qze(["c", "-1" if codec == "qze_fast" else "-2", "-T", str(_tier_threads())], data)
+    if codec in ("qze_fast", "qze_balanced", "qze_max"):
+        flag = {"qze_fast": "-1", "qze_balanced": "-2", "qze_max": "-3"}[codec]
+        return _qze(["c", flag, "-T", str(_tier_threads())], data)
     if codec == "qzpar":
         try:
             from src import qzpar
@@ -467,7 +472,7 @@ def encode(codec, data, ram_mb=None):
 
 METHOD = {"qzmf": "qzmf", "qzc2": "qzc2", "qzc2_text": "qzc2", "qzc2_lean": "qzc2", "qzc2_text_lean": "qzc2", "qzs": "qzs", "qzm": "qzm", "qzb": "qzb", "qzb_w0": "qzb",
           "zstd": "stored_zstd", "xz": "stored_xz", "stored": "stored",
-          "qze_fast": "qze", "qze_balanced": "qze", "qzpar": "qzpar"}
+          "qze_fast": "qze", "qze_balanced": "qze", "qze_max": "qze", "qzpar": "qzpar"}
 
 def decode(method, blob):
     if method == "qze":

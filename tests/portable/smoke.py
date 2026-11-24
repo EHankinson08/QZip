@@ -11,7 +11,7 @@ def main():
     ins = make_inputs()
     for name in ("table.csv", "words.txt"):
         data = ins[name][:400000]
-        for mode in ("tier-fast", "tier-balanced", "smart", "auto"):
+        for mode in ("quick", "classic", "deep", "tier-fast", "tier-balanced", "smart", "auto"):
             c, info = compress_bytes(data, mode=mode)
             blob = dump_container(c)
             out = decompress_container(load_container(blob))
@@ -20,7 +20,7 @@ def main():
             print(f"{'OK  ' if ok else 'FAIL'} api {mode:14s} {name}: {len(data):,} -> {len(blob):,} B via {info.get('route_choice') or info.get('chosen')}")
     with tempfile.TemporaryDirectory() as d:
         f = os.path.join(d, "t.csv"); open(f, "wb").write(ins["table.csv"][:300000])
-        for flag in ("--fast", "--balanced", "--strong"):
+        for flag in ("--quick", "--classic", "--deep", "--fast", "--balanced", "--strong"):
             subprocess.check_call([sys.executable, "-m", "qzip", "compress", f, "-o", f + ".qz", "-f", flag])
             subprocess.check_call([sys.executable, "-m", "qzip", "decompress", f + ".qz", "-o", f + ".out", "-f"])
             ok = open(f, "rb").read() == open(f + ".out", "rb").read()

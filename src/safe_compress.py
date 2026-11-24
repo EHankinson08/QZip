@@ -8,11 +8,15 @@
     installed). `stored` if nothing is smaller than the input. No try-all.
 
 Modes
-  auto (default)          predictive router (src/qzrouter.py), objective "balanced": the GPL mcm fork (qzmf,
+  quick (default, CLI --quick)  QZip everyday tier: qze -2 (CSV transform + BWT / zstd, parallel blocks).
+                          Best in class vs xz / 7z / brotli -11 on the mixed 719 MB corpus.
+  classic (CLI --classic)  the launch/current method: predictive router (src/qzrouter.py), GPL mcm fork (qzmf,
                           src/engine_mcmfork, -q11) for text / CSV / logs / binaries; predicted exceptions: CSVs
                           wider than 256 fields -> max codec (qzc2 / qzs), NIfTI -> qzm, label maps -> qzb,
                           incompressible -> stored. Without the qzmf binary (not built) it behaves as auto-max.
-  auto-max (CLI --max)    same analysis, objective "max": smallest output from QZip's own codecs (qzc2 = x18 CM /
+  auto                    alias of classic (kept for compatibility)
+  deep (CLI --deep)       highest-ratio everyday path: qze -3 for now (looped-transformer deep mode later)
+  auto-max (CLI --max)    same analysis as classic, objective "max": smallest output from QZip's own codecs (qzc2 = x18 CM /
                           qzs CSV+log / qzm NIfTI / stored); ~3x slower than auto on text
   auto-fast               same analysis, picks among the fast codecs (qzb word+BWT on/off, zstd, stored)
   tier-fast (CLI --fast)  everyday fast tier: qze -1 (CSV column transform + zstd, parallel blocks)
@@ -46,11 +50,12 @@ QR.register(R)   # qzcore decoders (qzc2 / qzb / qzs / qzm) for routed container
 LEGACY_METHOD = "hybrid_quantum_v2025_10"
 TEXT_METHOD = "text"
 ENGINE_METHODS = [LEGACY_METHOD, "hybrid_quantum", "adaptive_quantum", "quantum_superposition", "quantum_entanglement"]
-DEFAULT_MODE = "auto"
+DEFAULT_MODE = "quick"
 AUTO_METHOD = "qzrouter"
 AUTO_OBJECTIVE = {"auto": "balanced", "auto-max": "max", "auto-fast": "fast",
-                  "tier-fast": "tier-fast", "tier-balanced": "tier-balanced", "smart": "smart"}
-LEVEL_OF = {"tier-fast": "fast", "tier-balanced": "fast", "smart": "fast", "fast": "fast", "auto": "fast", "auto-max": "fast", "auto-fast": "fast", "max": "max", "ultra": "ultra", "legacy": None}
+                  "tier-fast": "tier-fast", "tier-balanced": "tier-balanced", "smart": "smart",
+                  "quick": "tier-balanced", "classic": "balanced", "deep": "tier-max", "tier-max": "tier-max"}
+LEVEL_OF = {"tier-fast": "fast", "tier-balanced": "fast", "tier-max": "fast", "smart": "fast", "quick": "fast", "classic": "fast", "deep": "fast", "fast": "fast", "auto": "fast", "auto-max": "fast", "auto-fast": "fast", "max": "max", "ultra": "ultra", "legacy": None}
 MODES = {   # mode -> the single encoder it runs
     "fast":   [LEGACY_METHOD],
     "auto":   [AUTO_METHOD, LEGACY_METHOD],   # legacy only runs if the router could not encode
@@ -58,6 +63,10 @@ MODES = {   # mode -> the single encoder it runs
     "auto-fast": [AUTO_METHOD, LEGACY_METHOD],
     "tier-fast": [AUTO_METHOD],       # everyday tiers (CLI --fast / --balanced / --smart); --strong = auto
     "tier-balanced": [AUTO_METHOD],
+    "tier-max": [AUTO_METHOD],
+    "quick": [AUTO_METHOD],           # default: QZip everyday Quick (qze -2)
+    "classic": [AUTO_METHOD, LEGACY_METHOD],  # launch method (same as auto)
+    "deep": [AUTO_METHOD],
     "smart": [AUTO_METHOD],
     "max":    [LEGACY_METHOD],
     "ultra":  [LEGACY_METHOD],

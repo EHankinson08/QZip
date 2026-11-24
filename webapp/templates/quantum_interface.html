@@ -118,14 +118,22 @@
                     <i class="fas fa-cloud-upload-alt"></i> Compress Files
                 </h2>
                 
-                <!-- Method Selection -->
+                <!-- Mode toggle: Quick (default) / Classic / Deep. Hidden input keeps existing JS working. -->
                 <div class="mb-6">
-                    <label class="block text-sm font-medium text-gray-700 mb-2">Compression Method</label>
-                    <select id="compressionMethod" class="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-purple-500 focus:border-purple-500">
-                        <option value="auto" selected>Auto (recommended): QZip's mcm-based engine for text, CSV &amp; logs; a quick file analysis picks the codec, runs only that one (verified)</option>
-                        <option value="auto-max">Max (x18 / CSV structure): smallest output, about 3x slower (verified)</option>
-                        <option value="auto-fast">Auto fast: same prediction, fastest codecs only (verified)</option>
-                    </select>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Mode</label>
+                    <div class="inline-flex rounded-md border border-gray-300 overflow-hidden shadow-sm" role="radiogroup" aria-label="Compression mode">
+                        <button type="button" data-mode-btn="quick" aria-pressed="true"
+                            title="Quick: everyday default. Beats xz -9, 7z -9 and brotli -11 on a mixed corpus at tens of MB/s."
+                            class="mode-btn px-5 py-2 text-sm font-medium bg-purple-600 text-white">Quick</button>
+                        <button type="button" data-mode-btn="classic" aria-pressed="false"
+                            title="Classic: the launch method (mcm-fork router, x18 on some files)."
+                            class="mode-btn px-5 py-2 text-sm font-medium bg-white text-gray-700 border-l border-gray-300 hover:bg-gray-50">Classic</button>
+                        <button type="button" data-mode-btn="deep" aria-pressed="false"
+                            title="Deep: highest ratio. Uses qze max for now; the looped-transformer path will land here later."
+                            class="mode-btn px-5 py-2 text-sm font-medium bg-white text-gray-700 border-l border-gray-300 hover:bg-gray-50">Deep</button>
+                    </div>
+                    <input type="hidden" id="compressionMethod" value="quick">
+                    <p id="modeHint" class="mt-2 text-sm text-gray-500">Quick: everyday default, verified, tens of MB/s.</p>
                 </div>
                 
                 <!-- File Upload Area -->
@@ -357,6 +365,35 @@
         const folderDecompressDropZone = document.getElementById('folderDecompressDropZone');
         const folderDecompressInput = document.getElementById('folderDecompressInput');
         
+
+        // Quick / Classic / Deep toggle (writes #compressionMethod for existing compress handlers)
+        (function(){
+            const input = document.getElementById('compressionMethod');
+            const hint = document.getElementById('modeHint');
+            const hints = {
+                quick: 'Quick: everyday default, verified, tens of MB/s.',
+                classic: 'Classic: the launch method (mcm-fork router / x18).',
+                deep: 'Deep: highest ratio (qze max for now).'
+            };
+            function setMode(m){
+                if (!input) return;
+                input.value = m;
+                if (hint) hint.textContent = hints[m] || '';
+                document.querySelectorAll('[data-mode-btn]').forEach(b => {
+                    const on = b.getAttribute('data-mode-btn') === m;
+                    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+                    b.classList.toggle('bg-purple-600', on);
+                    b.classList.toggle('text-white', on);
+                    b.classList.toggle('bg-white', !on);
+                    b.classList.toggle('text-gray-700', !on);
+                });
+            }
+            document.querySelectorAll('[data-mode-btn]').forEach(b => {
+                b.addEventListener('click', () => setMode(b.getAttribute('data-mode-btn')));
+            });
+            setMode(input && input.value ? input.value : 'quick');
+        })();
+
         // Initialize
         window.addEventListener('DOMContentLoaded', async () => {
             // Local mode (default): no API key needed. Server tells us via /api/config.

@@ -1,9 +1,9 @@
 # Everyday QZip (fast / balanced)
 
-Recommended go-to compressor: **`qzip compress --balanced`** (`qze -2`).
-Speed-first alternative: **`qzip compress --fast`** (`qze -1`).
+Recommended go-to compressor: **`qzip compress`** or **`--quick`** (`qze -2`, the Quick default).
+Speed-first alternative: **`qzip compress --fast`** (`qze -1`). Classic: **`--classic`**. Deep: **`--deep`** (`qze -3` until the looped transformer lands).
 
-These are the qze tiers: block-parallel zstd (fast) or libbsc BWT + static QLFC / zstd (balanced), with a CSV column transform when a delimiter is detected. They are not the slower mcm-fork default (`qzip compress` with no flag). Format is unchanged (`QZE1`); streams are identical across Linux x86-64, Linux arm64, and Windows x86-64.
+Quick (`qze -2`) and Deep (`qze -3`) are the qze tiers: block-parallel zstd (fast) or libbsc BWT + static QLFC / zstd (balanced / max), with a CSV column transform when a delimiter is detected. Classic (`--classic`) is the launch mcm-fork router. Format is unchanged (`QZE1`); streams are identical across Linux x86-64, Linux arm64, and Windows x86-64.
 
 ## Pareto (14 files, 719 MB, 8 threads)
 
@@ -37,7 +37,7 @@ Strong: CSVs (youth.csv 31.9 vs xz -9 14.0 and brotli -11 15.7; TRI 11.3 vs ~9) 
 
 ## Recommended default and next levers
 
-- **Default everyday use: `--balanced`.** It is the one that can replace xz / 7z / brotli -11 as the go-to setting: better total size than those leaders here, tens of MB/s, one command.
+- **Default everyday use: `qzip compress` / `--quick`.** Quick can replace xz / 7z / brotli -11 as the go-to setting: better total size than those leaders here, tens of MB/s, one command. `--balanced` is the same engine.
 - **`--fast`** when encode speed or RAM matters more than size (the zstd -3 replacement).
 - **`--max` / `qze -3`** when size wins and ~17 MB/s is acceptable.
 
