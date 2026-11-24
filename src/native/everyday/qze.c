@@ -254,11 +254,26 @@ static size_t zstd_into(buf *o, const uint8_t *s, size_t n, int level, int wlog)
   size_t r = ZSTD_compress2(cc, o->b, cap, s, n); ZSTD_freeCCtx(cc);
   if (ZSTD_isError(r)) return 0; o->n = r; return r;
 }
+static size_t bsc_into2(buf *o, const uint8_t *s, size_t n, int sorter, int coder, int lzpmin) {
+  o->n = 0; bres(o, n + LIBBSC_HEADER_SIZE + 64);
+  int r = bsc_compress(s, o->b, (int)n, lzpmin ? 16 : 0, lzpmin ? lzpmin : 0, sorter, coder, LIBBSC_FEATURE_FASTMODE);
+  if (r < 0) return 0; o->n = (size_t)r; return (size_t)r;
+}
 static size_t bsc_into(buf *o, const uint8_t *s, size_t n, int coder) {
   o->n = 0; bres(o, n + LIBBSC_HEADER_SIZE + 64);
   int r = bsc_compress(s, o->b, (int)n, 16, 128, LIBBSC_BLOCKSORTER_BWT, coder, LIBBSC_FEATURE_FASTMODE);
   if (r < 0) return 0; o->n = (size_t)r; return (size_t)r;
 }
+#ifndef B2LV
+#define B2LV 6
+#endif
+#ifndef B2MB
+#define B2MB 8
+#endif
+#ifndef B2BIN
+#define B2BIN 97   /* bsc must win by 3% on the sample (zstd decodes much faster) */
+#endif
+#define SAMPLE ((size_t)512 << 10)
 static int try_csv(blk_t *b, int delim, int first, int usenum, buf *t) {
   t->n = 0;
   if (csv_encode(b->raw, b->rawlen, delim, first, usenum, t)) return 0;
@@ -278,8 +293,39 @@ static void comp_block(job_t *j, size_t i) {
     if (!b->err && b->c.n >= sn) { b->backend = B_STORED; b->c.n = 0; put(&b->c, src, sn); }
     return;
   }
-  /* balanced: candidates raw / CSV transposed text / CSV transposed + numeric; libbsc for text, zstd -19 for binary;
-     keep the smallest (costs up to 3 backend runs on CSV blocks) */
+  if (C->tier == 2) {
+    /* balanced: libbsc BWT + static QLFC on small parallel blocks for text, zstd -B2LV for binary. For CSV the
+       variant (raw / transposed text / transposed + numeric) is picked by coding a ~512 KB head sample of each,
+       so the full block is coded once. */
+    int cand = 0;
+    if (C->delim) {
+      size_t sl = b->rawlen < SAMPLE ? b->rawlen : SAMPLE;
+      while (sl < b->rawlen && b->raw[sl - 1] != '\n') sl++;
+      blk_t sb = *b; sb.rawlen = sl; sb.t.b = NULL; sb.t.n = sb.t.cap = 0;
+      size_t bestn = (size_t)-1; buf c = {0};
+      for (int k = 0; k < 3; k++) {
+        const uint8_t *src = b->raw; size_t sn = sl;
+        if (k > 0) { if (!try_csv(&sb, C->delim, i == 0, k == 2, &sb.t)) continue; src = sb.t.b; sn = sb.t.n; }
+        if (bsc_into2(&c, src, sn, LIBBSC_BLOCKSORTER_BWT, LIBBSC_CODER_QLFC_STATIC, 0) && c.n < bestn) { bestn = c.n; cand = k; }
+      }
+      free(c.b); free(sb.t.b);
+    }
+    const uint8_t *src = b->raw; size_t sn = b->rawlen;
+    if (cand > 0 && try_csv(b, C->delim, i == 0, cand == 2, &b->t)) { src = b->t.b; sn = b->t.n; b->transform = 1; }
+    int usebsc = b->transform || is_texty(src, sn);
+    if (!usebsc) {   /* binary: BWT often beats LZ on tables / databases / executables; decide on a head sample */
+      size_t sl = sn < SAMPLE ? sn : SAMPLE; buf c1 = {0}, c2 = {0}; int lg = 10; while (((size_t)1 << lg) < sl && lg < 27) lg++;
+      size_t a1 = bsc_into2(&c1, src, sl, LIBBSC_BLOCKSORTER_BWT, LIBBSC_CODER_QLFC_STATIC, 0), a2 = zstd_into(&c2, src, sl, C->zlevel, lg);
+      usebsc = a1 && (!a2 || a1 * 100 < a2 * B2BIN); free(c1.b); free(c2.b);
+    }
+    if (usebsc) { b->backend = B_BSC; if (!bsc_into2(&b->c, src, sn, LIBBSC_BLOCKSORTER_BWT, LIBBSC_CODER_QLFC_STATIC, 0)) b->err = 1; }
+    else { int lg = 10; while (((size_t)1 << lg) < sn && lg < 27) lg++;
+           b->backend = B_ZSTD; if (!zstd_into(&b->c, src, sn, C->zlevel, lg)) b->err = 1; }
+    if (!b->err && b->c.n >= sn) { b->backend = B_STORED; b->c.n = 0; put(&b->c, src, sn); }
+    return;
+  }
+  /* max (tier 3, the v1.1 prototype's balanced): candidates raw / CSV transposed text / CSV transposed + numeric;
+     libbsc adaptive on big blocks for text, zstd -19 for binary; keep the smallest (up to 3 backend runs) */
   int lg = 10; while (((size_t)1 << lg) < b->rawlen && lg < 27) lg++;
   buf best = {0}; int bbe = -1, btr = 0; buf bt = {0};
   for (int cand = 0; cand < 3; cand++) {
@@ -325,10 +371,10 @@ int main(int argc, char **argv) {
 #ifdef _WIN32
   _setmode(_fileno(stdin), _O_BINARY); _setmode(_fileno(stdout), _O_BINARY);
 #endif
-  if (argc < 4) { fprintf(stderr, "usage: qze c [-1|-2] [-T n] [-b MB] [-L lvl] [-x] in out | qze d [-T n] in out\n"); return 2; }
+  if (argc < 4) { fprintf(stderr, "usage: qze c [-1|-2|-3] [-T n] [-b MB] [-L lvl] [-x] in out | qze d [-T n] in out\n"); return 2; }
   int tier = 1, T = ncpu(), bmb = 0, zl = -1, nocsv = 0; int a = 2;
   for (; a < argc - 2; a++) {
-    if (!strcmp(argv[a], "-1")) tier = 1; else if (!strcmp(argv[a], "-2")) tier = 2;
+    if (!strcmp(argv[a], "-1")) tier = 1; else if (!strcmp(argv[a], "-2")) tier = 2; else if (!strcmp(argv[a], "-3")) tier = 3;
     else if (!strcmp(argv[a], "-T")) T = atoi(argv[++a]); else if (!strcmp(argv[a], "-b")) bmb = atoi(argv[++a]);
     else if (!strcmp(argv[a], "-L")) zl = atoi(argv[++a]); else if (!strcmp(argv[a], "-x")) nocsv = 1;
     else die("bad option");
@@ -337,12 +383,12 @@ int main(int argc, char **argv) {
   if (bsc_init(LIBBSC_FEATURE_FASTMODE) != LIBBSC_NO_ERROR) die("libbsc init");
   size_t n; uint8_t *in = readall(argv[argc - 2], &n);
   if (argv[1][0] == 'c') {
-    if (zl < 0) zl = tier == 1 ? 0 : 19;   /* tier 1: 0 = per block (3 CSV-transformed, 5 other) */
-    size_t bs = (size_t)(bmb > 0 ? bmb : (tier == 1 ? 4 : 32)) << 20;
+    if (zl < 0) zl = tier == 1 ? 0 : tier == 2 ? B2LV : 19;   /* tier 1: 0 = per block (3 CSV-transformed, 5 other) */
+    size_t bs = (size_t)(bmb > 0 ? bmb : (tier == 1 ? 4 : tier == 2 ? B2MB : 32)) << 20;
     int delim = nocsv ? 0 : detect_delim(in, n);
     /* blocks: CSV cuts at line ends; at least T blocks when the input is big enough */
     /* spread big inputs over the threads, but never below the tier's minimum block (ratio) unless -b is given */
-    size_t minb = (size_t)(tier == 1 ? 1 : 16) << 20;
+    size_t minb = (size_t)(tier == 1 ? 1 : tier == 2 ? 2 : 16) << 20;
     if (!bmb && n / T < bs) { size_t e = (n + T - 1) / T; bs = e > minb ? e : minb; }
     size_t cap = n / (bs > 1 ? bs : 1) + 2, nb = 0, p = 0; blk_t *B = (blk_t *)calloc(cap + 1, sizeof(blk_t));
     while (p < n || nb == 0) {

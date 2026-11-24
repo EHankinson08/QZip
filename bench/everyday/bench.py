@@ -6,7 +6,7 @@
 Every codec is run as its own process (CLI), so the numbers are what a user sees: wall-clock compress and
 decompress time (MB/s = input MB / s, 1 MB = 10^6 B), peak RSS of each process (wait4 ru_maxrss), compressed
 size, and a sha256 check of the round trip. Files are read once before timing so the page cache is warm.
-Needs: zstd, xz, brotli, lz4 on PATH (apt/brew install zstd xz-utils brotli lz4) and `make native` (QZip
+Needs: zstd, xz, brotli, lz4, 7z on PATH (apt/brew install zstd xz-utils brotli lz4) and `make native` (QZip
 binaries); missing tools are skipped. Results append as JSON lines; bench/everyday/table.py renders them.
 """
 import argparse, hashlib, json, os, platform, shlex, shutil, subprocess, sys, tempfile, time
@@ -24,6 +24,7 @@ def codecs(T):
         # QZip tiers
         "qzip-fast":      ([QZE, "c", "-1", "-T", str(T), "{i}", "{o}"], [QZE, "d", "-T", str(T), "{o}", "{r}"]),
         "qzip-balanced":  ([QZE, "c", "-2", "-T", str(T), "{i}", "{o}"], [QZE, "d", "-T", str(T), "{o}", "{r}"]),
+        "qzip-max":       ([QZE, "c", "-3", "-T", str(T), "{i}", "{o}"], [QZE, "d", "-T", str(T), "{o}", "{r}"]),
         # strong = the default engine (qzmf -q11 / -q10) through qzpar -T 1 (one chunk; qzpar handles qzmf's stored file
         # name and adds a 57-byte header)
         "qzip-strong":    ([PY, os.path.join(ROOT, "src", "qzpar.py"), "c", "-T", "1", "--level", "11", "{i}", "{o}"],
@@ -41,6 +42,10 @@ def codecs(T):
         "zstd-19":        (["zstd", "-q", "-f", "-19", "-T1", "{i}", "-o", "{o}"], ["zstd", "-q", "-f", "-d", "{o}", "-o", "{r}"]),
         "zstd-19-T":      (["zstd", "-q", "-f", "-19", f"-T{T}", "{i}", "-o", "{o}"], ["zstd", "-q", "-f", "-d", "{o}", "-o", "{r}"]),
         "zstd-19-long":   (["zstd", "-q", "-f", "-19", "--long=27", f"-T{T}", "{i}", "-o", "{o}"], ["zstd", "-q", "-f", "-d", "--long=27", "{o}", "-o", "{r}"]),
+        "xz-6":           (["sh", "-c", "xz -6 -T1 -c {i} > {o}"], ["sh", "-c", "xz -d -c {o} > {r}"]),
+        "xz-6-T":         (["sh", "-c", f"xz -6 -T{T} -c {{i}} > {{o}}"], ["sh", "-c", f"xz -d -T{T} -c {{o}} > {{r}}"]),
+        "7z-5":           (["sh", "-c", f"rm -f {{o}}.7z && 7z a -bd -bso0 -bsp0 -t7z -mx=5 -mmt={T} {{o}}.7z {{i}} && mv {{o}}.7z {{o}}"], ["sh", "-c", "7z e -bd -bso0 -bsp0 -t7z -so {o} > {r}"]),
+        "7z-9":           (["sh", "-c", f"rm -f {{o}}.7z && 7z a -bd -bso0 -bsp0 -t7z -mx=9 -mmt={T} {{o}}.7z {{i}} && mv {{o}}.7z {{o}}"], ["sh", "-c", "7z e -bd -bso0 -bsp0 -t7z -so {o} > {r}"]),
         "xz-9":           (["sh", "-c", "xz -9 -T1 -c {i} > {o}"], ["sh", "-c", "xz -d -c {o} > {r}"]),
         "xz-9-T":         (["sh", "-c", f"xz -9 -T{T} -c {{i}} > {{o}}"], ["sh", "-c", f"xz -d -T{T} -c {{o}} > {{r}}"]),
         "brotli-11":      (["brotli", "-f", "-q", "11", "-w", "24", "{i}", "-o", "{o}"], ["brotli", "-f", "-d", "{o}", "-o", "{r}"]),
@@ -79,11 +84,19 @@ def _tree_rss_mb(pid):
         return 0.0
     return tot / 2**20
 
+TIMEOUT = [1800.0]
+
 def run(cmd, i, o, r):
     import threading
     cmd = [c.replace("{i}", shlex.quote(i) if cmd[0] == "sh" else i).replace("{o}", o).replace("{r}", r) for c in cmd]
     t = time.perf_counter()
-    p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, start_new_session=os.name != "nt")
+    def _kill():                            # a hung engine must not stall the whole run
+        try:
+            os.killpg(p.pid, 9) if os.name != "nt" else p.kill()
+        except OSError:
+            pass
+    killer = threading.Timer(TIMEOUT[0], _kill); killer.daemon = True; killer.start()
     peak, done = [0.0], threading.Event()
     def sample():
         while not done.wait(0.05):
@@ -97,7 +110,7 @@ def run(cmd, i, o, r):
     else:                                   # Windows: sampled tree RSS only
         rc, ru_mb = p.wait(), 0.0
     dt = time.perf_counter() - t
-    done.set(); th.join()
+    done.set(); th.join(); killer.cancel()
     p.stderr.close()
     return dt, max(ru_mb, peak[0]), rc, err
 
@@ -116,7 +129,9 @@ def main():
     ap.add_argument("--out", default="bench_everyday.jsonl")
     ap.add_argument("--tmp", default=None)
     ap.add_argument("--host", default=platform.node())
+    ap.add_argument("--timeout", type=float, default=1800.0, help="kill a compress/decompress step after this many s")
     a = ap.parse_args()
+    TIMEOUT[0] = a.timeout
     C = codecs(a.threads)
     tmp = tempfile.mkdtemp(prefix="qzbench_", dir=a.tmp)
     try:
@@ -141,7 +156,7 @@ def main():
                 rec = dict(file=os.path.basename(f), bytes=n, codec=name, size=size, ratio=round(n / max(size, 1), 3),
                            comp_s=round(ct, 3), decomp_s=round(dtm, 3), comp_MBps=round(n / 1e6 / ct, 2),
                            decomp_MBps=round(n / 1e6 / dtm, 2), comp_rss_MB=round(cr, 1), decomp_rss_MB=round(dr, 1),
-                           roundtrip="ok" if ok else "FAIL", threads=a.threads, host=a.host,
+                           roundtrip="ok" if ok else ("TIMEOUT" if dtm >= a.timeout else "FAIL"), threads=a.threads, host=a.host,
                            platform=f"{platform.system()}-{platform.machine()}", time=time.strftime("%Y-%m-%dT%H:%M:%S%z"))
                 print(json.dumps(rec), flush=True)
                 with open(a.out, "a") as fh:

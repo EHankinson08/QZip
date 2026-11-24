@@ -38,8 +38,9 @@ CODECS = ("qzmf", "qzc2", "qzc2_text", "qzc2_lean", "qzc2_text_lean", "qzs", "qz
           "qze_fast", "qze_balanced", "qzpar")
 # Everyday tiers (bench/everyday/RESULTS.md):
 #   qze_fast      CSV column transform + zstd, block-parallel: zstd-class speed, smaller than zstd -3 on every file tested
-#   qze_balanced  CSV column transform + libbsc BWT (text) / zstd -19 (binary), block-parallel: xz-class or better size,
-#                 50-100x xz's compression speed
+#   qze_balanced  CSV column transform (variant picked on a head sample) + libbsc BWT/static QLFC on 8 MB parallel
+#                 blocks; binary blocks take BWT or zstd -6, whichever is smaller on a sample: xz -9-class size at
+#                 100-250 MB/s compress, 150-500 MB/s decompress (8 threads)
 #   qzpar         the strong engine (qzmf) on T chunks in parallel, memory level sized to the RAM budget
 TIERS = ("fast", "balanced", "strong")
 FAST = ("qzb", "qzb_w0", "stored")   # zstd -19 / xz -9 are 10-100x slower than qzb: override only
@@ -238,7 +239,7 @@ def qzc2_ram_mb(n, cap_mb=12288, prose=False):
 
 # measured MB/s per tier on the box (8 threads; bench/everyday/RESULTS.md), (compress, decompress), conservative
 TIER_SPEED = {"fast": {"csv": (200, 400), "text": (250, 400), "binary": (250, 500)},
-              "balanced": {"csv": (40, 80), "text": (60, 80), "binary": (8, 300)},
+              "balanced": {"csv": (100, 170), "text": (110, 150), "binary": (120, 150)},
               "strong": {"csv": (2.5, 2.5), "text": (1.5, 1.5), "binary": (1.5, 1.5)}}
 GOALS = ("everyday", "open-often", "archive")
 
@@ -273,7 +274,7 @@ def predict(f, objective="max", ram_mb=None):
     if objective == "tier-fast":
         return "qze_fast", f"{k}: fast tier (CSV column transform + zstd, parallel blocks)"
     if objective == "tier-balanced":
-        return "qze_balanced", f"{k}: balanced tier (CSV column transform + BWT / zstd -19, parallel blocks)"
+        return "qze_balanced", f"{k}: balanced tier (CSV column transform + BWT / zstd, parallel blocks)"
     if objective == "smart":
         tier, why = smart_tier(f, ram_mb=ram_mb)
         if tier == "strong":

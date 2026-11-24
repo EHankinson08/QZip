@@ -9,7 +9,8 @@ def main(paths):
         for line in open(p):
             line = line.strip()
             if line:
-                r = json.loads(line); rows[(r.get("platform", "?"), r["file"], r["bytes"])].append(r)
+                r = json.loads(line); k = (r.get("platform", "?"), r["file"], r["bytes"])
+                rows[k] = [x for x in rows[k] if x["codec"] != r["codec"]] + [r]   # a later re-run of a codec replaces the earlier row
     for (plat, f, n), rs in rows.items():
         print(f"\n**{f}** ({n / 1e6:.1f} MB, {plat}, {rs[0].get('threads')} threads)\n")
         print("| codec | size (B) | ratio | compress MB/s | decompress MB/s | peak RAM c / d (MB) | round trip |")
