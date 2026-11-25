@@ -7,7 +7,8 @@ name: native-matrix
 #   * tests/portable/smoke.py: Python API + CLI round trips for --fast / --balanced / --strong / --smart,
 #   * bench/everyday/bench.py: size, compress / decompress MB/s and peak RAM per tier vs zstd / xz / brotli on the runner,
 # then platform wheels (py3-none-<platform>) built with cibuildwheel (Linux, macOS) or pip wheel (Windows/MSYS2) and
-# smoke-tested from a clean install. Results are uploaded as artifacts and summarised on the run page.
+# smoke-tested from a clean install. Results and the standalone qze binary (qze-<version>-<os>-<arch>[.exe]) are
+# uploaded as artifacts and summarised on the run page.
 on:
   push:
     branches: [everyday]
@@ -46,6 +47,7 @@ jobs:
           install: >-
             make
             mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-libgomp
             mingw-w64-x86_64-zstd
             mingw-w64-x86_64-xz
             mingw-w64-x86_64-brotli
@@ -62,6 +64,19 @@ jobs:
           ${CC:-cc} --version | head -1 || true
           make native ARCH=${{ matrix.arch }}
           ls -l src/native src/qzcore | grep -E 'qz|qtyp|libqz' || true
+      - name: Package the qze binary (qze-<version>-<os>-<arch>[.exe])
+        run: |
+          V=$(python -c "import re;print(re.search(r'^version = \"([^\"]+)\"', open('pyproject.toml').read(), re.M).group(1))")
+          X=""; if [ "${{ runner.os }}" = "Windows" ]; then X=".exe"; fi
+          mkdir -p qze-artifact
+          cp "src/native/qze$X" "qze-artifact/qze-$V-${{ matrix.name }}$X"
+          ./qze-artifact/qze-$V-${{ matrix.name }}$X 2>&1 | head -1 || true
+          ls -l qze-artifact
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qze-${{ matrix.name }}
+          path: qze-artifact/
+          if-no-files-found: error
       - name: Golden streams (identical bytes on every platform) + round trips
         run: python tests/portable/golden.py --json golden-${{ matrix.name }}.json
       - name: Install QZip (default deps) and smoke-test every tier
@@ -134,7 +149,7 @@ jobs:
         with:
           msystem: MINGW64
           path-type: inherit
-          install: make mingw-w64-x86_64-gcc
+          install: make mingw-w64-x86_64-gcc mingw-w64-x86_64-libgomp
       - name: Build wheel (static MinGW programs, no DLL dependencies)
         run: |
           make native ARCH=portable

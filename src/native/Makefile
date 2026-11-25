@@ -32,7 +32,7 @@ all: libqznative.so qtyp$(EXE) qzcm$(EXE) qzlpaq$(EXE) qzmf$(EXE) qze$(EXE)
 	@echo "built libqznative.so + qtyp + qzcm + qzlpaq + qzmf + qze (everyday tiers)"
 
 libqznative.so: $(LIB_OBJ)
-	$(CXX) -shared $(OMPF) -o $@ $^ $(if $(IS_WIN),-static-libgcc -static-libstdc++ -Wl$(,)-Bstatic -lgomp -lwinpthread,)
+	$(CXX) -shared $(OMPF) -o $@ $^ $(if $(IS_WIN),-static-libgcc -static-libstdc++ -Wl$(,)-Bstatic $(if $(HAS_OMP),-lgomp,) -lwinpthread,)
 
 $(OBJ)/%.o: %.cpp
 	@mkdir -p $(dir $@)

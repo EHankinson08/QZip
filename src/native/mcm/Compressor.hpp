@@ -33,7 +33,11 @@
 #include <list>
 #include <ctime>
 #include <iomanip>
+#if defined(__APPLE__)
+#include <stdlib.h>  // macOS has no <malloc.h>; malloc/free come from <stdlib.h>
+#else
 #include <malloc.h>
+#endif
 
 #include "Stream.hpp"
 #include "Util.hpp"
