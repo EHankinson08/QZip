@@ -42,12 +42,16 @@ def codecs(T):
         "zstd-19":        (["zstd", "-q", "-f", "-19", "-T1", "{i}", "-o", "{o}"], ["zstd", "-q", "-f", "-d", "{o}", "-o", "{r}"]),
         "zstd-19-T":      (["zstd", "-q", "-f", "-19", f"-T{T}", "{i}", "-o", "{o}"], ["zstd", "-q", "-f", "-d", "{o}", "-o", "{r}"]),
         "zstd-19-long":   (["zstd", "-q", "-f", "-19", "--long=27", f"-T{T}", "{i}", "-o", "{o}"], ["zstd", "-q", "-f", "-d", "--long=27", "{o}", "-o", "{r}"]),
-        "xz-6":           (["sh", "-c", "xz -6 -T1 -c {i} > {o}"], ["sh", "-c", "xz -d -c {o} > {r}"]),
-        "xz-6-T":         (["sh", "-c", f"xz -6 -T{T} -c {{i}} > {{o}}"], ["sh", "-c", f"xz -d -T{T} -c {{o}} > {{r}}"]),
-        "7z-5":           (["sh", "-c", f"rm -f {{o}}.7z && 7z a -bd -bso0 -bsp0 -t7z -mx=5 -mmt={T} {{o}}.7z {{i}} && mv {{o}}.7z {{o}}"], ["sh", "-c", "7z e -bd -bso0 -bsp0 -t7z -so {o} > {r}"]),
-        "7z-9":           (["sh", "-c", f"rm -f {{o}}.7z && 7z a -bd -bso0 -bsp0 -t7z -mx=9 -mmt={T} {{o}}.7z {{i}} && mv {{o}}.7z {{o}}"], ["sh", "-c", "7z e -bd -bso0 -bsp0 -t7z -so {o} > {r}"]),
-        "xz-9":           (["sh", "-c", "xz -9 -T1 -c {i} > {o}"], ["sh", "-c", "xz -d -c {o} > {r}"]),
-        "xz-9-T":         (["sh", "-c", f"xz -9 -T{T} -c {{i}} > {{o}}"], ["sh", "-c", f"xz -d -T{T} -c {{o}} > {{r}}"]),
+        # stdout codecs: argv has no {o}/{r}, so run() writes the process stdout to that path.
+        # (A shell `> {o}` breaks on Windows/MSYS2, where tempfile paths contain backslashes.)
+        "xz-6":           (["xz", "-6", "-T1", "-c", "{i}"], ["xz", "-d", "-c", "{o}"]),
+        "xz-6-T":         (["xz", "-6", f"-T{T}", "-c", "{i}"], ["xz", "-d", f"-T{T}", "-c", "{o}"]),
+        "7z-5":           (["7z", "a", "-bd", "-bso0", "-bsp0", "-t7z", "-mx=5", f"-mmt={T}", "{o}.7z", "{i}"],
+                           ["7z", "e", "-bd", "-bso0", "-bsp0", "-t7z", "-so", "{o}"]),
+        "7z-9":           (["7z", "a", "-bd", "-bso0", "-bsp0", "-t7z", "-mx=9", f"-mmt={T}", "{o}.7z", "{i}"],
+                           ["7z", "e", "-bd", "-bso0", "-bsp0", "-t7z", "-so", "{o}"]),
+        "xz-9":           (["xz", "-9", "-T1", "-c", "{i}"], ["xz", "-d", "-c", "{o}"]),
+        "xz-9-T":         (["xz", "-9", f"-T{T}", "-c", "{i}"], ["xz", "-d", f"-T{T}", "-c", "{o}"]),
         "brotli-9":       (["brotli", "-f", "-q", "9", "-w", "24", "{i}", "-o", "{o}"], ["brotli", "-f", "-d", "{o}", "-o", "{r}"]),
         "brotli-11":      (["brotli", "-f", "-q", "11", "-w", "24", "{i}", "-o", "{o}"], ["brotli", "-f", "-d", "{o}", "-o", "{r}"]),
         "brotli-5":       (["brotli", "-f", "-q", "5", "{i}", "-o", "{o}"], ["brotli", "-f", "-d", "{o}", "-o", "{r}"]),
@@ -87,33 +91,38 @@ def _tree_rss_mb(pid):
 
 TIMEOUT = [1800.0]
 
-def run(cmd, i, o, r):
+def run(cmd, i, o, r, stdout_path=None):
     import threading
-    cmd = [c.replace("{i}", shlex.quote(i) if cmd[0] == "sh" else i).replace("{o}", o).replace("{r}", r) for c in cmd]
+    cmd = [c.replace("{i}", i).replace("{o}", o).replace("{r}", r) for c in cmd]
     t = time.perf_counter()
-    p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, start_new_session=os.name != "nt")
-    def _kill():                            # a hung engine must not stall the whole run
-        try:
-            os.killpg(p.pid, 9) if os.name != "nt" else p.kill()
-        except OSError:
-            pass
-    killer = threading.Timer(TIMEOUT[0], _kill); killer.daemon = True; killer.start()
-    peak, done = [0.0], threading.Event()
-    def sample():
-        while not done.wait(0.05):
-            peak[0] = max(peak[0], _tree_rss_mb(p.pid))
-    th = threading.Thread(target=sample, daemon=True); th.start()
-    err = p.stderr.read().decode(errors="replace")[-300:]
-    if hasattr(os, "wait4"):
-        _, status, ru = os.wait4(p.pid, 0)
-        rc = os.waitstatus_to_exitcode(status) if hasattr(os, "waitstatus_to_exitcode") else status
-        ru_mb = ru.ru_maxrss / (2**20 if sys.platform == "darwin" else 1024)
-    else:                                   # Windows: sampled tree RSS only
-        rc, ru_mb = p.wait(), 0.0
-    dt = time.perf_counter() - t
-    done.set(); th.join(); killer.cancel()
-    p.stderr.close()
-    return dt, max(ru_mb, peak[0]), rc, err
+    out_f = open(stdout_path, "wb") if stdout_path else subprocess.DEVNULL
+    try:
+        p = subprocess.Popen(cmd, stdout=out_f, stderr=subprocess.PIPE, start_new_session=os.name != "nt")
+        def _kill():                            # a hung engine must not stall the whole run
+            try:
+                os.killpg(p.pid, 9) if os.name != "nt" else p.kill()
+            except OSError:
+                pass
+        killer = threading.Timer(TIMEOUT[0], _kill); killer.daemon = True; killer.start()
+        peak, done = [0.0], threading.Event()
+        def sample():
+            while not done.wait(0.05):
+                peak[0] = max(peak[0], _tree_rss_mb(p.pid))
+        th = threading.Thread(target=sample, daemon=True); th.start()
+        err = p.stderr.read().decode(errors="replace")[-300:]
+        if hasattr(os, "wait4"):
+            _, status, ru = os.wait4(p.pid, 0)
+            rc = os.waitstatus_to_exitcode(status) if hasattr(os, "waitstatus_to_exitcode") else status
+            ru_mb = ru.ru_maxrss / (2**20 if sys.platform == "darwin" else 1024)
+        else:                                   # Windows: sampled tree RSS only
+            rc, ru_mb = p.wait(), 0.0
+        dt = time.perf_counter() - t
+        done.set(); th.join(); killer.cancel()
+        p.stderr.close()
+        return dt, max(ru_mb, peak[0]), rc, err
+    finally:
+        if stdout_path:
+            out_f.close()
 
 def sha(path):
     h = hashlib.sha256()
@@ -146,13 +155,18 @@ def main():
                 if not shutil.which(c[0]) and not os.path.exists(c[0]):
                     print(f"skip {name}: {c[0]} not found", file=sys.stderr); continue
                 o, r = os.path.join(tmp, "c.bin"), os.path.join(tmp, "r.bin")
-                for x in (o, r):
+                for x in (o, r, o + ".7z"):
                     if os.path.exists(x): os.remove(x)
-                ct, cr, ce, cerr = run(c, f, o, r)
-                if ce != 0:
+                # If the argv template has no {o}/{r}, the tool writes the payload on stdout.
+                c_out = None if any("{o}" in x for x in c) else o
+                d_out = None if any("{r}" in x for x in d) else r
+                ct, cr, ce, cerr = run(c, f, o, r, c_out)
+                if ce == 0 and any("{o}.7z" in x for x in c) and os.path.exists(o + ".7z"):
+                    os.replace(o + ".7z", o)
+                if ce != 0 or not os.path.isfile(o):
                     print(f"{name} {f}: compress failed {cerr}", file=sys.stderr); continue
                 size = os.path.getsize(o)
-                dtm, dr, de, derr = run(d, f, o, r)
+                dtm, dr, de, derr = run(d, f, o, r, d_out)
                 ok = de == 0 and os.path.exists(r) and sha(r) == ref
                 rec = dict(file=os.path.basename(f), bytes=n, codec=name, size=size, ratio=round(n / max(size, 1), 3),
                            comp_s=round(ct, 3), decomp_s=round(dtm, 3), comp_MBps=round(n / 1e6 / ct, 2),
