@@ -14,9 +14,11 @@ LOBJ   := $(patsubst lzma/%.c,$(OBJ)/lzma/%.o,$(LSRC))
 BOBJ   := $(patsubst ../libbsc/%.cpp,$(OBJ)/bsc/%.o,$(BSRC)) $(OBJ)/bsc/libsais.o
 LIBS   ?= -lpthread
 
-qze$(EXE): $(OBJ)/qze.o $(ZOBJ) $(LOBJ) $(BOBJ)
+qze$(EXE): $(OBJ)/qze.o $(OBJ)/xform.o $(ZOBJ) $(LOBJ) $(BOBJ)
 	$(CXX) $(OPT) -o $@ $^ $(LIBS)
-$(OBJ)/qze.o: qze.c
+$(OBJ)/qze.o: qze.c xform.h
+	@mkdir -p $(dir $@); $(CC) $(CFLAGS) -std=c11 -c $< -o $@
+$(OBJ)/xform.o: xform.c xform.h
 	@mkdir -p $(dir $@); $(CC) $(CFLAGS) -std=c11 -c $< -o $@
 $(OBJ)/lzma/%.o: lzma/%.c
 	@mkdir -p $(dir $@); $(CC) $(CFLAGS) -c $< -o $@

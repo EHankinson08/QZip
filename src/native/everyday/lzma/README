@@ -3,7 +3,8 @@ Vendored from the official 7-Zip 26.06 SDK (https://www.7-zip.org/sdk.html),
 file lzma2606.7z SHA-256 1d9da340870b12712e9068be178a4436fbad785486b62aed6e2aa88ea1e3bb65
 (https://github.com/ip7z/7zip/releases/download/26.06/lzma2606.7z).
 
-Only the ANSI-C LZMA encoder/decoder used by qze is copied here (single-thread,
+The ANSI-C LZMA encoder/decoder plus the branch converters (Bra.c, Bra86.c,
+BraIA64.c, Bra.h, RotateDefs.h) used by qze are copied here (single-thread,
 compiled with -DZ7_ST). See lzma-sdk.txt for the license (public domain).
 
 Do not compile LzFindMt/Threads; qze already parallelizes at block level.

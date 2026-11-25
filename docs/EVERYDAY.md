@@ -3,7 +3,7 @@
 Recommended go-to compressor: **`qzip compress`** or **`--quick`** (`qze -2`, the Quick default).
 Speed-first alternative: **`qzip compress --fast`** (`qze -1`). Classic: **`--classic`**. Deep: **`--deep`** (`qze -3` until the looped transformer lands).
 
-Quick (`qze -2`) and Deep (`qze -3`) are the qze tiers: block-parallel zstd (fast) or libbsc BWT + static QLFC / zstd, with a CSV column transform when a delimiter is detected. Quick also routes SQLite through a page-type grouping transform plus LZMA, and uses LZMA (vendored LZMA SDK 26.06, public domain, Igor Pavlov) on small binaries, PDFs, tarballs, and logs where a sample says it wins. Solid lzma-9 is size-capped at 32 MB so the 719 MB mix stays ≥20 MB/s. Classic (`--classic`) is the launch mcm-fork router. Format is QZE1 (backend 3 = LZMA, transform 2 = SQLite pages). Streams are identical across Linux x86-64, Linux arm64, and Windows x86-64 (same `T` and flags; block split can change with `-T` unless `-b` is pinned).
+Quick (`qze -2`) and Deep (`qze -3`) are the qze tiers: block-parallel zstd (fast) or libbsc BWT + static QLFC / zstd, with a CSV column transform when a delimiter is detected. Quick also routes SQLite through a page-type grouping transform plus LZMA, applies a field/column log transform (timestamps, IDs, syslog) and an NDJSON key dictionary, and uses LZMA (vendored LZMA SDK 26.06, public domain, Igor Pavlov, including x86/ARM64 branch converters) on small binaries, PDFs, tarballs, and logs where a sample says it wins. Solid lzma-9 is size-capped at 32 MB so the 719 MB mix stays ≥20 MB/s. Classic (`--classic`) is the launch mcm-fork router. Format is QZE1 (backend 3 = LZMA; transforms 2 = SQLite pages, 3 = log, 4 = JSON keys, 5 = BCJ; flags may mark a file-level log transform). Streams are identical across Linux x86-64, Linux arm64, and Windows x86-64 (same `T` and flags; block split can change with `-T` unless `-b` is pinned).
 
 Chart: [docs/img/everyday_pareto.png](img/everyday_pareto.png) (size vs compress time for the mix). Raw rows: [docs/everyday_pareto.jsonl](everyday_pareto.jsonl).
 
@@ -15,8 +15,8 @@ Corpus: enwik8; Silesia `mozilla` and `samba`; mixed real-world set (3 CSVs, 3 L
 
 | codec | ratio | size (MB) | compress MB/s | decompress MB/s | peak RAM (MB) | Pareto |
 |---|---:|---:|---:|---:|---:|:-:|
-| **qzip-balanced / Quick (`qze -2`)** | **6.88** | **104.40** | **21.0** | **126.5** | **562** | **yes** |
-| qzip-max (`qze -3`) | 6.71 | 107.13 | 19.2 | 147.6 | 637 | yes |
+| **qzip-balanced / Quick (`qze -2`)** | **7.04** | **102.09** | **23.4** | **171.3** | **585** | **yes** |
+| qzip-max (`qze -3`) | 6.71 | 107.13 | 19.6 | 146.6 | 625 |  |
 | 7z -9 | 6.52 | 110.22 | 3.1 | 143.7 | 1048 |  |
 | xz -9 | 6.51 | 110.39 | 2.0 | 146.2 | 677 |  |
 | brotli -11 | 6.49 | 110.70 | 0.6 | 380.5 | 244 | yes |
@@ -26,20 +26,20 @@ Corpus: enwik8; Silesia `mozilla` and `samba`; mixed real-world set (3 CSVs, 3 L
 | zstd -19 -T | 6.07 | 118.48 | 3.4 | 877.6 | 450 | yes |
 | brotli -9 | 5.60 | 128.44 | 7.2 | 464.9 | 116 | yes |
 | brotli -5 | 5.24 | 137.28 | 45.4 | 443.1 | 94 | yes |
-| **qzip-fast (`qze -1`)** | **4.98** | **144.46** | **338.4** | **985.9** | **194** | **yes** |
+| **qzip-fast (`qze -1`)** | **4.98** | **144.46** | **344.2** | **955.8** | **199** | **yes** |
 | zstd -3 | 4.51 | 159.30 | 278.9 | 1016.6 | 43 |  |
 | zstd -3 -T | 4.51 | 159.30 | 764.6 | 1029.7 | 126 | yes |
 | lz4 | 2.84 | 253.44 | 827.1 | 1220.3 | 46 | yes |
 
-On the mix, Quick is strictly smaller and strictly faster to compress than xz -9, 7z -9, zstd -19 -T and `qze -3`. brotli -11 is still 6.3 MB larger and far slower to compress (0.6 vs 21.0 MB/s) but decompresses faster (380 vs 126 MB/s), so it stays on the Pareto front. The mix holds 21.0 MB/s, above the 20 MB/s floor. Fast is strictly smaller than zstd -3 -T on the mix (144.46 vs 159.30 MB) but not strictly faster (338 vs 765 MB/s).
+On the mix, Quick is strictly smaller and strictly faster (compress and decompress) than xz -9, 7z -9, and `qze -3`. brotli -11 is still 8.6 MB larger and far slower to compress (0.6 vs 23.4 MB/s) but decompresses faster (380 vs 171 MB/s), so it stays on the Pareto front. The mix holds 23.4 MB/s, above the 20 MB/s floor. Fast is strictly smaller than zstd -3 -T on the mix (144.46 vs 159.30 MB) but not strictly faster (344 vs 765 MB/s).
 
 ### Thread scaling (1 / 4 / 8)
 
-Block split in Quick/Deep can change with `-T` (sizes below are not identical across thread counts). Goldens pin `-T 2 -b 2` so streams stay fixed. T=8 is the default table. T=4 includes 7z and xz -6 -T; T=1 is qzip + zstd only.
+Block split in Quick/Deep can change with `-T` (sizes below are not identical across thread counts). Goldens pin `-T 2 -b 2` so streams stay fixed. T=8 is the default table (remasured after the log/JSON/BCJ transforms). T=1 and T=4 columns for Quick are from the previous policy and were not remasured in this round. T=4 includes 7z and xz -6 -T; T=1 is qzip + zstd only.
 
 | codec | T=1 MB/s (c / d) | T=4 | T=8 | T=8 size (MB) |
 |---|---:|---:|---:|---:|
-| Quick (`qze -2`) | 13.5 / 65.9 | 21.0 / 142.2 | 21.0 / 126.5 | 104.40 |
+| Quick (`qze -2`) | 13.5 / 65.9 | 21.0 / 142.2 | 23.4 / 171.3 | 102.09 |
 | Deep (`qze -3`) | 8.1 / 52.0 | 17.9 / 123.5 | 19.2 / 147.6 | 107.13 |
 | Fast (`qze -1`) | 112.3 / 436.1 | 274.9 / 747.9 | 338.4 / 985.9 | 144.46 |
 | zstd -3 -T | 295.4 / 1043.2 | 636.1 / 972.6 | 764.6 / 1029.7 | 159.30 |
@@ -49,37 +49,37 @@ Block split in Quick/Deep can change with `-T` (sizes below are not identical ac
 
 Success is *strict* Pareto dominance: smaller **and** faster than each comparable competitor. Ties are losses.
 
-Quick **dominates all four** on 6/14 files: the three CSVs, enwik8 (22.15 MB @ 44.6 MB/s, 808 KB smaller than the previous Quick), openstack.log (1.97 MB @ 60.9 MB/s), and northwind.db (SQLite page-type grouping + LZMA; 5.30 MB at 18.3 MB/s, 236 KB smaller than xz -9).
+Quick **dominates all four** on 9/14 files: the three CSVs, enwik8, openstack.log, northwind.db, plus (new this round) healthapp.log (1.25 MB @ 10.7 MB/s, 62.9 KB smaller than brotli -11), ssh.log (0.87 MB @ 176 MB/s, 1.82 MB smaller than brotli -11), and gh_events.json (4.01 MB @ 59.4 MB/s, 41.3 KB smaller than brotli -11).
 
-Trade-offs on the other eight (bytes vs the named leader, compress speed vs that same leader):
+Trade-offs on the other five (bytes vs the named leader, compress speed vs that same leader):
 
 | file | Quick | vs best high-ratio result | notes |
 |---|---|---|---|
-| ssh.log | 2.85 MB @ 94.4 MB/s | faster than brotli -11 (130×) but **+122.97 KB** | dominates xz -9 / 7z -9 / zstd -19 -T. LZP-32 + 32 MB blocks closed 119 KB of the old gap |
-| healthapp.log | 1.48 MB @ 8.1 MB/s | faster than brotli -11 (~12×) but **+169.3 KB**; also **+46.4 KB** vs zstd -19 -T | dominates xz -9 / 7z -9. Already on LZMA; LZP does not apply. Solid lzma-9 is larger than current Quick and still far behind brotli |
-| paper.pdf | 1.03 MB @ 6.5 MB/s | **+5.0 KB** vs brotli -11 (faster 8×); **+129 B and slower (0.44×)** vs 7z -9 | dominates xz -9 / zstd -19 -T |
-| gh_events.json | 4.07 MB @ 78.3 MB/s | faster than all four, but **+12.3 KB** vs brotli -11, **+129.1 KB vs 7z -9**, **+137.0 KB vs xz -9** | LZP-32 + 32 MB blocks closed 549 KB of the old gap. Solid lzma-9 still ties xz -9 and would be slower |
-| cpython-3.12.7.tar | 21.52 MB @ 136.8 MB/s | faster than all four, **+1,537 KB** vs 7z -9, **+1,475 KB** vs xz -9, **+1,241 KB** vs brotli -11 | solid lzma-9 ties xz -9, still loses to 7z -9, and would run at ~2.5 MB/s |
-| mozilla | 16.35 MB @ 144.3 MB/s | faster than all four, **+3,010 KB** vs 7z -9, **+2,980 KB** vs xz -9, **+2,482 KB** vs brotli -11 | same solid-lzma story as CPython (~2.3 MB/s) |
-| samba | 3.76 MB @ 3.6 MB/s | **−116 B** vs 7z -9 but **slower (0.53×)**; dominates xz -9 / brotli -11 / zstd -19 -T | fragile size win; speed is the gap |
-| mixed_pystdlib.tar | 5.38 MB @ 2.7 MB/s | **−2.5 KB** vs 7z -9 but **slower (0.52×)**; **−8.6 KB** vs xz -9 but **0.99×** speed (not strictly faster) | dominates brotli -11 only |
+| paper.pdf | 1.03 MB @ 7.2 MB/s | **+4,988 B** vs brotli -11 (faster 9×); **+129 B and slower (0.50×)** vs 7z -9 | dominates xz -9 / zstd -19 -T. Already deflated; log/JSON/BCJ do not apply |
+| cpython-3.12.7.tar | 21.52 MB @ 124.6 MB/s | faster than all four, **+1,537 KB** vs 7z -9 | no executable members for BCJ; blocked lzma-9 is too slow for the mix floor |
+| mozilla | 16.35 MB @ 107.4 MB/s | faster than all four, **+3,010 KB** vs 7z -9 | i386 COFF `.so` members; BCJ + blocked lzma-9 still missed 7z at a mix-safe speed |
+| samba | 3.76 MB @ 4.0 MB/s | **−116 B** vs 7z -9 but **slower (0.59×)**; dominates xz -9 / brotli -11 / zstd -19 -T | fragile size win; speed is the gap |
+| mixed_pystdlib.tar | 5.34 MB @ 2.8 MB/s | **−38.5 KB** vs 7z -9 but **slower (0.54×)**; now strictly smaller and faster than xz -9 | BCJ on ELF `.so` members; dominates brotli -11 / xz -9 / zstd -19 -T |
 
-Putting solid lzma-9 on mozilla + gh_events + CPython would drop the mix to about 6.8 MB/s, under the 20 MB/s floor. Even gh_events alone (the cheapest of the three) would drop the mix to about 16.4 MB/s. Those three stay on BWT/zstd on purpose until a *faster* path can beat 7z / brotli.
+Putting solid lzma-9 on mozilla + CPython would still drop the mix under the 20 MB/s floor. Those two stay on BWT/zstd on purpose until a faster path can beat 7z.
 
 ### Fast vs zstd -3 -T
 
-Fast is strictly smaller than zstd -3 -T on 13/14 files (paper.pdf is **+15,107 B** and much slower). It is strictly faster on only mixed_pystdlib.tar (445 vs 388 MB/s). On the mix, 338 vs 765 MB/s at a better ratio (4.98 vs 4.51). The bottleneck is the single-thread baseline (T=1: 112 vs 295 MB/s), not scaling (Fast T1→T8 is 3.0×; zstd -3 -T is 2.6×).
+Fast is strictly smaller than zstd -3 -T on 13/14 files (paper.pdf is **+15,107 B** and much slower). Official T=8 remasure this round did not show a strict per-file speed win. On the mix, 344 vs 765 MB/s at a better ratio (4.98 vs 4.51). New Fast levers (1–4 MB blocks, levels 1–5, T=8/16, hash-chain-style low levels) did not beat 764.6 MB/s at a strictly better ratio. Default stays level 5.
 
 ## Recommended default and policy
 
-- **Default everyday use: `qzip compress` / `--quick`.** On the 719 MB mix Quick is the size/speed leader against xz -9, 7z -9 and brotli -11 (104.40 MB at 21.0 MB/s, 562 MB RAM). It does not yet strictly dominate every file.
+- **Default everyday use: `qzip compress` / `--quick`.** On the 719 MB mix Quick is the size/speed leader against xz -9, 7z -9 and brotli -11 (102.09 MB at 23.4 MB/s, 585 MB RAM). It strictly dominates 9/14 files; five remain (CPython, mozilla, paper, and the samba/mixed speed gap vs 7z -9).
 - **`--fast`** when encode speed or RAM matters more than size (better ratio than zstd -3; not yet as fast as zstd -3 -T).
 - **`--deep` / `qze -3`** is currently dominated by Quick on this mix; it remains the placeholder for the looped-transformer path.
 
 Quick LZMA policy (tier 2, skipped if the user passed `-b` for the solid/block choice only — the type route still runs):
 
 - SQLite (`SQLite format 3`): page-type grouping + lzma-9 with an 8 MB dictionary, 8 MB blocks, T-way parallel.
-- ustar / PDF / ELF / PE / ZIP at or under 32 MB: solid lzma-9.
+- Health-style pipe logs: whole-file column/timestamp transform, then 4 MB lzma-9 blocks.
+- Syslog: per-block field transform, 16 MB BWT blocks.
+- NDJSON: per-block key dictionary (tilde-escaped), 32 MB BWT + LZP when the prefix agrees.
+- ustar / PDF / ELF / PE / ZIP at or under 32 MB: solid lzma-9; ELF/PE/Mach-O/COFF members (and those containers) get the SDK x86/ARM64 branch filter before LZMA.
 - Other files at or under 32 MB: 4 MB sample of BWT vs zstd vs LZMA (and vs the CSV transform if a delimiter was detected). LZMA wins on pipe-delimited logs such as healthapp; a 1 MB sample was not enough there. Text uses 8 MB blocked lzma-9; other binaries use solid lzma-9.
 - Larger files stay on BWT/zstd so the mix stays ≥20 MB/s.
 - On that BWT/zstd path (not LZMA, and only if the user did not pass `-b`): a 16 MB prefix still picks 8 vs 16 MB blocks for CSV/text; non-CSV text larger than 32 MB uses 32 MB blocks; an 8 MB prefix picks libbsc LZP-32 only when it shrinks that prefix. A full 32 MB prefix probe of those choices dropped the mix to 14.5 MB/s and was rejected.
@@ -91,13 +91,13 @@ Levers already tried (stop after 3 zero-gain rounds):
 3. **Adopted:** on text or CSV inputs larger than 16 MB, encode a 16 MB prefix at 8 MB and 16 MB blocks and use the winner (skipped if the user passed `-b`, so golden streams stay fixed).
 4. Vendored portable LZMA + SQLite page-type grouping + size-capped solid lzma-9: **adopted.** Closed the xz -9 size gap on northwind, healthapp, samba, mixed, and paper; mix after that step was 23.3 MB/s, then 21.0 MB/s after LZP/32 MB blocks.
 5. Fast: level 3 is closer in speed on enwik8 but slightly *larger* than zstd -3; level 1 + 1 MB blocks can match zstd -3 -T speed at a much worse ratio. Default stays level 5 so the mix keeps a better ratio than zstd -3.
-6. **Adopted:** LZP-32 (when an 8 MB prefix agrees) and 32 MB blocks on large non-CSV text. Mix 104.40 MB at 21.0 MB/s (−1.69 MB vs the previous Quick). Forced solid lzma-9 on large files, blanket `-b`/`-L`, and a 32 MB prefix probe were zero-gain or broke the 20 MB/s floor (3-round stop).
+6. **Adopted:** LZP-32 (when an 8 MB prefix agrees) and 32 MB blocks on large non-CSV text. Mix was 104.40 MB at 21.0 MB/s before the log/JSON/BCJ round.
+7. **Adopted:** field/column log transform (health, syslog), NDJSON key dictionary, and SDK BCJ on executable tar members. Mix 102.09 MB at 23.4 MB/s. Strict dominance 9/14. Fast block/level/T sweeps were zero-gain vs the 764.6 MB/s bar.
 
 Still open (do not land without a measured gain that also keeps the mix ≥20 MB/s; ties count as losses):
 
-- A log / JSON transform, or libbsc LZP / adaptive QLFC, so ssh.log and healthapp.log (and gh_events) can strictly beat brotli -11. Raw LZMA cannot: solid lzma-9 is worse than current Quick on healthapp and still 141 KB behind brotli on gh_events.
-- A path that strictly beats 7z -9 on mozilla, the CPython tarball, and paper.pdf (raw LZMA ties xz -9 and loses to 7z -9). Must be faster than solid lzma-9 to keep the 20 MB/s floor.
-- Speed up samba / mixed (already slightly smaller than 7z -9, but ~0.5× as fast).
+- A path that strictly beats 7z -9 on mozilla, the CPython tarball, and paper.pdf (raw LZMA ties xz -9 and loses to 7z -9). Must keep the 20 MB/s mix floor.
+- Speed up samba / mixed (already smaller than 7z -9, but ~0.5× as fast).
 - Fast single-thread baseline vs zstd -3 -T, without giving back the ratio win.
 - Cheaper or parallel prefix probe; a 32 MB block candidate on large text.
 
