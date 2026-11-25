@@ -6,7 +6,7 @@ are already built or QZIP_SKIP_NATIVE_BUILD=1, then ships them as package data. 
 py3-none-<platform>: the programs are not Python extensions, so one wheel serves every Python 3 on that platform.
 """
 import os, subprocess, sys
-from setuptools import setup
+from setuptools import Distribution, setup
 from setuptools.command.build_py import build_py
 
 try:
@@ -29,6 +29,16 @@ class BuildNative(build_py):
             subprocess.check_call(["make", "native", "ARCH=portable"], cwd=HERE, env=env)
         super().run()
 
+class BinaryDistribution(Distribution):
+    # Native programs are package data, not extension modules. has_ext_modules
+    # still has to be true so setuptools installs the packages into platlib
+    # (qzip-*.data/platlib/) rather than purelib. root_is_pure=False alone is
+    # not enough: the wheel stays platform-tagged with Root-Is-Purelib: false,
+    # but the binaries remain under .data/purelib/ and auditwheel repair
+    # rejects it ("shared library/libraries in purelib folder").
+    def has_ext_modules(self):
+        return True
+
 cmd = {"build_py": BuildNative}
 if _bdist_wheel is not None:
     class PlatWheel(_bdist_wheel):
@@ -36,8 +46,9 @@ if _bdist_wheel is not None:
             super().finalize_options()
             self.root_is_pure = False
         def get_tag(self):
+            # Keep one wheel per OS/arch, not per CPython ABI (py3-none-<platform>).
             _, _, plat = super().get_tag()
             return "py3", "none", plat
     cmd["bdist_wheel"] = PlatWheel
 
-setup(cmdclass=cmd)
+setup(distclass=BinaryDistribution, cmdclass=cmd)
