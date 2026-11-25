@@ -9,3 +9,9 @@ the multithread helpers (MtCoder, MtDec), and the branch converters
 (Bra.c, Bra86.c, BraIA64.c, Bra.h, RotateDefs.h) used by qze are copied
 here. See lzma-sdk.txt for the license (public domain). qze also
 parallelizes independent blocks.
+
+QZip modification (2026): LzmaEnc.c / LzmaEnc.h add LzmaEnc_MemEncodePrimed
+(raw LZMA with a preset dictionary, for qze's shared-window parallel blocks)
+and an optional long-distance hash-table candidate in ReadMatchDistances.
+Both are encoder-side only and off unless that function is called; the
+stream format is standard LZMA. All other files are unmodified.

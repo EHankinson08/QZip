@@ -252,9 +252,9 @@ static int ncpu(void) {
 }
 
 /* ------------------------------------------------------------------ blocks */
-enum { B_STORED = 0, B_ZSTD = 1, B_BSC = 2, B_LZMA = 3, B_LZMA2 = 4 };
+enum { B_STORED = 0, B_ZSTD = 1, B_BSC = 2, B_LZMA = 3, B_LZMA2 = 4, B_LZMAP = 5 };
 typedef struct { const uint8_t *raw; size_t rawlen; uint8_t backend, transform; buf t; buf c; uint64_t h; int err; } blk_t;
-typedef struct { blk_t *b; int tier, delim, zlevel, first_csv; int lzma_level; unsigned lzma_dict; unsigned pagesz; int lzp_min; int xf; int linecut; int pdf; } cctx_t;
+typedef struct { blk_t *b; int tier, delim, zlevel, first_csv; int lzma_level; unsigned lzma_dict; unsigned pagesz; int lzp_min; int xf; int linecut; int pdf; const uint8_t *base; int primed; } cctx_t;
 #ifndef LZMA_SOLID_MAX
 #define LZMA_SOLID_MAX ((size_t)32 << 20)   /* solid lzma-9 only on files up to this size (Quick speed cap) */
 #endif
@@ -300,6 +300,41 @@ static int lzma_from(uint8_t *dst, size_t want, const uint8_t *c, size_t cl) {
   size_t destLen = want, srcLen = cl - LZMA_PROPS_SIZE;
   int r = LzmaUncompress(dst, &destLen, c + LZMA_PROPS_SIZE, &srcLen, c, LZMA_PROPS_SIZE);
   return !(r == SZ_OK && destLen == want);
+}
+/* Shared-window parallel LZMA (B_LZMAP): block i is raw LZMA whose dictionary is preset to all payload bytes
+   before it, so 8 parallel blocks keep nearly all of a solid stream's long-range matches. The encoder's tree
+   match finder covers only the last `dense` bytes before the block; older bytes are reached through a
+   content-defined 12-byte hash table (see LzmaEnc_MemEncodePrimed). lc4 lp0 pb0, nice 273, mc 48.
+   The decoder needs nothing new except order: block i decodes after blocks 0..i-1 (sequential pass). */
+#define LZMAP_BLOCKS 8
+static size_t lzmap_into(buf *o, const uint8_t *base, size_t pre, size_t n, size_t total) {
+  size_t cap = n + n / 3 + 65536 + LZMA_PROPS_SIZE;
+  o->n = 0; bres(o, cap);
+  size_t dense = total / LZMAP_BLOCKS; if (dense < ((size_t)2 << 20)) dense = (size_t)2 << 20; if (dense > ((size_t)12 << 20)) dense = (size_t)12 << 20;
+  unsigned lb = 16; while (lb < 25 && ((size_t)1 << (lb + 2)) < total) lb++;
+  CLzmaEncHandle h = LzmaEnc_Create(&g_Alloc);
+  if (!h) return 0;
+  CLzmaEncProps pr; LzmaEncProps_Init(&pr); pr.level = 9; pr.dictSize = (UInt32)(pre + n < 4096 ? 4096 : pre + n);
+  pr.lc = 4; pr.lp = 0; pr.pb = 0; pr.fb = 273; pr.mc = 48; pr.numThreads = 1;
+  size_t ps = LZMA_PROPS_SIZE, dl = cap - LZMA_PROPS_SIZE;
+  int r = LzmaEnc_SetProps(h, &pr);
+  if (r == SZ_OK) r = LzmaEnc_WriteProperties(h, o->b, &ps);
+  if (r == SZ_OK) r = LzmaEnc_MemEncodePrimed(h, o->b + LZMA_PROPS_SIZE, &dl, base, pre, pre + n, dense, lb, &g_Alloc, &g_Alloc);
+  LzmaEnc_Destroy(h, &g_Alloc, &g_Alloc);
+  if (r != SZ_OK || ps != LZMA_PROPS_SIZE) return 0;
+  o->n = LZMA_PROPS_SIZE + dl; return o->n;
+}
+static int lzmap_from(uint8_t *base, size_t pre, size_t want, const uint8_t *c, size_t cl) {
+  if (cl < LZMA_PROPS_SIZE) return 1;
+  CLzmaDec d; LzmaDec_Construct(&d);
+  if (LzmaDec_AllocateProbs(&d, c, LZMA_PROPS_SIZE, &g_Alloc) != SZ_OK) return 1;
+  if (pre + want > d.prop.dicSize && pre != 0) { LzmaDec_FreeProbs(&d, &g_Alloc); return 1; }
+  d.dic = base; d.dicBufSize = pre + want; LzmaDec_Init(&d); d.dicPos = pre;
+  if (pre) d.checkDicSize = d.prop.dicSize;   /* preset dictionary: base[0..pre) */
+  SizeT sl = cl - LZMA_PROPS_SIZE; ELzmaStatus st;
+  SRes r = LzmaDec_DecodeToDic(&d, pre + want, c + LZMA_PROPS_SIZE, &sl, LZMA_FINISH_END, &st);
+  int bad = !(r == SZ_OK && d.dicPos == pre + want && sl == cl - LZMA_PROPS_SIZE);
+  LzmaDec_FreeProbs(&d, &g_Alloc); return bad;
 }
 /* LZMA2 (raw-chunk fallback: incompressible 64 KB chunks are stored, unlike LZMA1). One prop byte + stream.
    Used for PDF split blocks: deflate bodies are mostly incompressible. Single-threaded per block. */
@@ -417,6 +452,12 @@ static void comp_block(job_t *j, size_t i) {
     if (!b->err && b->c.n >= sn) { b->backend = B_STORED; b->c.n = 0; put(&b->c, src, sn); }
     return;
   }
+  if (C->tier == 2 && C->primed) {
+    b->backend = B_LZMAP;
+    if (!lzmap_into(&b->c, C->base, (size_t)(b->raw - C->base), b->rawlen, (size_t)C->primed)) b->err = 1;
+    if (!b->err && b->c.n >= b->rawlen) { b->backend = B_STORED; b->c.n = 0; put(&b->c, b->raw, b->rawlen); }
+    return;
+  }
   if (C->tier == 2) {
     /* balanced: libbsc BWT + static QLFC on small parallel blocks for text, zstd -B2LV for binary. For CSV the
        variant (raw / transposed text / transposed + numeric) is picked by coding a ~512 KB head sample of each,
@@ -481,10 +522,11 @@ static void comp_block(job_t *j, size_t i) {
   if (bbe < 0) { b->err = 1; return; }
   b->c = best; b->backend = (uint8_t)bbe; b->transform = (uint8_t)btr; free(b->t.b); b->t = bt;
 }
-typedef struct { const uint8_t *in; size_t inn; uint8_t *out; size_t *pay, *ooff; int err; size_t hdr; } dctx_t;
+typedef struct { const uint8_t *in; size_t inn; uint8_t *out; size_t *pay, *ooff; int err; size_t hdr; int pass; } dctx_t;
 static void dec_block(job_t *j, size_t i) {
   dctx_t *D = (dctx_t *)j->ctx; const uint8_t *h = D->in + D->hdr + i * 22;
   int be = h[0], tr = h[1]; size_t raw = r32(h + 2), tl = r32(h + 6), cl = r32(h + 10); uint64_t xh = r64(h + 14);
+  if ((be == B_LZMAP) != (D->pass == 1)) return;   /* shared-window blocks: second, sequential pass */
   const uint8_t *c = D->in + D->pay[i]; uint8_t *dst = D->out + D->ooff[i];
   uint8_t *tb = tr ? (uint8_t *)malloc(tl + 1) : dst; size_t want = tr ? tl : raw; int bad = 0;
   if (be == B_STORED) { if (cl != want) bad = 1; else memcpy(tb, c, cl); }
@@ -492,6 +534,7 @@ static void dec_block(job_t *j, size_t i) {
   else if (be == B_BSC) { if (bsc_decompress(c, (int)cl, tb, (int)want, LIBBSC_FEATURE_FASTMODE) != LIBBSC_NO_ERROR) bad = 1; }
   else if (be == B_LZMA) { if (lzma_from(tb, want, c, cl)) bad = 1; }
   else if (be == B_LZMA2) { if (lzma2_from(tb, want, c, cl)) bad = 1; }
+  else if (be == B_LZMAP) { if (tr || lzmap_from(D->out, D->ooff[i], want, c, cl)) bad = 1; }
   else bad = 1;
   if (!bad && tr == 1) { if (csv_decode(tb, tl, dst, raw)) bad = 1; }
   else if (!bad && tr == 2) { if (sqlite_decode(tb, tl, dst, raw)) bad = 1; }
@@ -531,6 +574,14 @@ static void writeall(const char *path, const uint8_t *b, size_t n) {
   if (n && fwrite(b, 1, n, f) != n) die("write failed"); if (f != stdout) fclose(f); else fflush(f);
 }
 
+/* Shared-window route: ustar archives of 8 MB..1 GB that are not mostly .pyc or RISC executables
+   (those keep their tuned solid LZMA). Header checks only, so other files pay nothing. */
+static int lzmap_gate(const uint8_t *in, size_t n) {
+  if (n < ((size_t)8 << 20) || n > ((size_t)1 << 30) || memcmp(in + 257, "ustar", 5)) return 0;
+  if (xf_tar_ext_bytes(in, n, "pyc") * 4 >= n || xf_tar_risc_bytes(in, n) * 2 >= n) return 0;
+  return 1;
+}
+
 int main(int argc, char **argv) {
 #ifdef _WIN32
   _setmode(_fileno(stdin), _O_BINARY); _setmode(_fileno(stdout), _O_BINARY);
@@ -552,7 +603,7 @@ int main(int argc, char **argv) {
     if (zl < 0) zl = tier == 1 ? 0 : tier == 2 ? B2LV : 19;   /* tier 1: 0 = per block (3 CSV-transformed, 5 other) */
     size_t bs = (size_t)(bmb > 0 ? bmb : (tier == 1 ? 4 : tier == 2 ? B2MB : 32)) << 20;
     int delim = nocsv ? 0 : detect_delim(in, n);
-    int lzma_level = 0; unsigned lzma_dict = 0, pagesz = 0; int solid = 0;
+    int lzma_level = 0; unsigned lzma_dict = 0, pagesz = 0; int solid = 0, primed = 0;
     int xf = 0, linecut = 0, file_xf = 0; size_t pdf_cut = 0;
     uint8_t *xf_payload = NULL; size_t xf_len = 0; uint64_t orig_xxh = 0;
     /* Quick (tier 2): SQLite always gets page-type grouping + LZMA (8 MB blocks, 8 MB dict, level 9).
@@ -592,6 +643,8 @@ int main(int argc, char **argv) {
       } else if (looks_ndjson(in, n)) {
         xf = XF_JSON; delim = 0; linecut = 1;
         if (!bmb && n > ((size_t)32 << 20)) bs = (size_t)32 << 20;
+      } else if (!bmb && lzmap_gate(in, n)) {
+        primed = 1; delim = 0;
       } else if (n <= LZMA_SOLID_MAX || (n <= ((size_t)64 << 20) && n >= 262 && !memcmp(in + 257, "ustar", 5))) {
         /* Tarballs / PDFs / executables: a short prefix is a poor predictor (BWT can win the first
            few MB of a ustar of source, then lose on the whole file). Use solid lzma-9 directly.
@@ -659,6 +712,7 @@ int main(int argc, char **argv) {
       }
     }
     if (force_lzma > 0) {
+      primed = 0;
       lzma_level = force_lzma;
       delim = 0;
       if (pagesz) {
@@ -688,7 +742,7 @@ int main(int argc, char **argv) {
          tell 16 from 32, and a 32 MB prefix probe dropped the mix under 20 MB/s).
        - LZP-32 is chosen from an 8 MB prefix (cheap) when it shrinks that prefix.
        Skipped when the user passed -b (goldens use -b 2) or -P (LZP already chosen). */
-    if (tier == 2 && !bmb && !lzma_level && !file_xf && n > ((size_t)16 << 20) && (delim || is_texty(in, n)) && xf != XF_LOG) {
+    if (tier == 2 && !bmb && !primed && !lzma_level && !file_xf && n > ((size_t)16 << 20) && (delim || is_texty(in, n)) && xf != XF_LOG) {
       if (!delim && n > ((size_t)32 << 20)) {
         bs = (size_t)32 << 20; bmb = 32;
       } else {
@@ -706,6 +760,7 @@ int main(int argc, char **argv) {
         if (z32 != (size_t)-1 && z0 != (size_t)-1 && z32 < z0) lzp_min = 32;
       }
     }
+    if (primed) bs = (pn + LZMAP_BLOCKS - 1) / LZMAP_BLOCKS;   /* fixed 8 blocks: output does not depend on -T */
     size_t cap = pn / (bs > 1 ? bs : 1) + 2, nb = 0, p = 0; blk_t *B = (blk_t *)calloc(cap + 1, sizeof(blk_t));
     if (pdf_cut && pdf_cut < pn) {
       /* block 0 = header + rest, block 1 = all deflate bodies (splitting them costs ~25 KB on paper.pdf:
@@ -719,7 +774,7 @@ int main(int argc, char **argv) {
       if (nb >= cap) { cap *= 2; B = (blk_t *)realloc(B, (cap + 1) * sizeof(blk_t)); memset(B + nb, 0, (cap + 1 - nb) * sizeof(blk_t)); }
       B[nb].raw = payload + p; B[nb].rawlen = e - p; nb++; p = e; if (pn == 0) break;
     }
-    cctx_t C = {B, tier, delim, zl, 1, lzma_level, lzma_dict, pagesz, lzp_min, xf, linecut, pdf_cut ? 1 : 0};
+    cctx_t C = {B, tier, delim, zl, 1, lzma_level, lzma_dict, pagesz, lzp_min, xf, linecut, pdf_cut ? 1 : 0, payload, primed ? (int)(pn > 0x7fffffff ? 0x7fffffff : pn) : 0};
     run_par(comp_block, &C, nb, T);
     buf o = {0}; uint8_t hd[20]; memcpy(hd, "QZE1", 4); hd[4] = 1; hd[5] = (uint8_t)tier; hd[6] = (uint8_t)delim; hd[7] = (uint8_t)file_xf; w64(hd + 8, n); w32(hd + 16, (uint32_t)nb);
     put(&o, hd, 20);
@@ -746,8 +801,9 @@ int main(int argc, char **argv) {
     for (size_t i = 0; i < nb; i++) { const uint8_t *h = in + hdr0 + i * 22; pay[i] = p; oo[i] = q; p += r32(h + 10); q += r32(h + 2); }
     if (p != n || q != (file_xf ? xflen : on)) die("corrupt header");
     uint8_t *stage = (uint8_t *)malloc((file_xf ? xflen : on) ? (file_xf ? xflen : on) : 1);
-    dctx_t D = {in, n, stage, pay, oo, 0, hdr0};
+    dctx_t D = {in, n, stage, pay, oo, 0, hdr0, 0};
     run_par(dec_block, &D, nb, T);
+    D.pass = 1; run_par(dec_block, &D, nb, 1);
     if (D.err) die(D.err == 2 ? "checksum mismatch" : "corrupt block");
     uint8_t *out = stage;
     if (file_xf) {

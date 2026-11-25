@@ -40,9 +40,9 @@ STYLE = {
 
 # slightly jittered annotation offsets so labels don't sit on points
 OFF = {
-    "qzip-balanced": (10, 12),
+    "qzip-balanced": (12, -4),
     "qzip-fast": (8, -16),
-    "qzip-max": (18, -28),
+    "qzip-max": (12, 8),
     "7z-9": (8, 8),
     "xz-9": (8, -14),
     "brotli-11": (8, 2),

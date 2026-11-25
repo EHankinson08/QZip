@@ -80,6 +80,11 @@ SRes LzmaEncode(Byte *dest, SizeT *destLen, const Byte *src, SizeT srcLen,
     const CLzmaEncProps *props, Byte *propsEncoded, SizeT *propsSize, int writeEndMark,
     ICompressProgressPtr progress, ISzAllocPtr alloc, ISzAllocPtr allocBig);
 
+/* QZip: see LzmaEnc.c. Raw LZMA (no end mark) of src[prefixLen..totalLen) with a preset dictionary src[0..prefixLen). */
+SRes LzmaEnc_MemEncodePrimed(CLzmaEncHandle p, Byte *dest, SizeT *destLen,
+    const Byte *src, SizeT prefixLen, SizeT totalLen, SizeT denseLen, unsigned ldmBits,
+    ISzAllocPtr alloc, ISzAllocPtr allocBig);
+
 EXTERN_C_END
 
 #endif

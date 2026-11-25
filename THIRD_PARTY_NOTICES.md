@@ -12,7 +12,7 @@ all of them except libcubwt.
 | libsais (Ilya Grebnov) | 2.12.2 | `src/native/libbsc/bwt/libsais/` | Apache-2.0 (`LICENSE` next to it) | suffix-array construction for the BWT |
 | libcubwt (Ilya Grebnov) | as shipped with libbsc 3.4.1 | `src/native/libbsc/bwt/libcubwt/` | Apache-2.0 | source only, not compiled (CUDA) |
 | zstd (Facebook / Meta, Yann Collet) | 1.5.7 | `src/native/everyday/zstd/` | BSD-3-Clause (`src/native/everyday/zstd` / LICENSE) | qze fast / binary-block backend |
-| LZMA SDK (Igor Pavlov) | 26.06 | `src/native/everyday/lzma/` | Public domain (`src/native/everyday/lzma/lzma-sdk.txt`) | qze Quick LZMA / LZMA2 backend (SQLite, small binaries / logs, PDF stream split) |
+| LZMA SDK (Igor Pavlov) | 26.06 | `src/native/everyday/lzma/` | Public domain (`src/native/everyday/lzma/lzma-sdk.txt`) | qze Quick LZMA / LZMA2 backend (SQLite, small binaries / logs, PDF stream split, shared-window source tarballs; `LzmaEnc.c`/`.h` carry a QZip addition, see `lzma/README`) |
 
 QZip's own code (`src/qzcore/` x18 `qzc2` / `qzc` / `qzs` / `qzb` / `qzm`, `src/native/qz_wrt.c`, `qz_bsc.c`,
 `fast/qtyp.c`, the Python packages) is Copyright 2026 Elliott Hankinson, GPL-3.0-or-later. The qzcore codecs were

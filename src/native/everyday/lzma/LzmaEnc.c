@@ -416,6 +416,10 @@ struct CLzmaEnc
   BoolInt finished;
   BoolInt multiThread;
   BoolInt needInit;
+  BoolInt primed;
+  unsigned ldmShift;
+  const Byte *ldmBase;
+  UInt32 *ldmTab;
   // BoolInt _maxMode;
 
   UInt64 nowPos64;
@@ -1087,6 +1091,14 @@ Z7_NO_INLINE static void Z7_FASTCALL LenPriceEnc_UpdateTables(
     p->matchFinder.Skip(p->matchFinderObj, (UInt32)(num)); }
 
 
+/* QZip: hash of 12 bytes for the long-distance table of LzmaEnc_MemEncodePrimed */
+#define QZ_LDM_K 12
+static Z7_FORCE_INLINE UInt32 QzLdmHash(const Byte *b)
+{
+  const UInt64 h = GetUi64(b) * (UInt64)0x9E3779B185EBCA87 ^ (UInt64)GetUi32(b + 8) * (UInt64)0xC2B2AE3D27D4EB4F;
+  return (UInt32)(h >> 32) ^ (UInt32)h;
+}
+
 static unsigned ReadMatchDistances(CLzmaEnc *p, unsigned *numPairsRes)
 {
   unsigned numPairs;
@@ -1097,6 +1109,29 @@ static unsigned ReadMatchDistances(CLzmaEnc *p, unsigned *numPairsRes)
     const UInt32 *d = p->matchFinder.GetMatches(p->matchFinderObj, p->matches);
     // if (!d) { p->mf_Failure = True; *numPairsRes = 0;  return 0; }
     numPairs = (unsigned)(d - p->matches);
+  }
+  if (p->ldmTab && p->numAvail >= QZ_LDM_K)
+  {
+    /* QZip: offer the long-distance candidate when it beats the tree's best */
+    const Byte *cur = p->matchFinder.GetPointerToCurrentPos(p->matchFinderObj) - 1;
+    const UInt32 q = p->ldmTab[QzLdmHash(cur) >> p->ldmShift];
+    const unsigned btLen = numPairs ? p->matches[(size_t)numPairs - 2] : 0;
+    if (q != 0 && btLen != p->numFastBytes)
+    {
+      const Byte *qp = p->ldmBase + (q - 1);
+      UInt32 lim = p->numAvail;
+      UInt32 len = 0;
+      if (lim > LZMA_MATCH_LEN_MAX)
+        lim = LZMA_MATCH_LEN_MAX;
+      while (len < lim && cur[len] == qp[len])
+        len++;
+      if (len >= QZ_LDM_K && len > btLen)
+      {
+        p->matches[numPairs] = len;
+        p->matches[(size_t)numPairs + 1] = (UInt32)(cur - qp) - 1;
+        numPairs += 2;
+      }
+    }
   }
   *numPairsRes = numPairs;
   
@@ -2333,6 +2368,8 @@ static void LzmaEnc_Construct(CLzmaEnc *p)
 {
   RangeEnc_Construct(&p->rc);
   MatchFinder_Construct(&MFB);
+  p->primed = 0;
+  p->ldmTab = NULL;
   
   #ifndef Z7_ST
   p->matchFinderMt.MatchFinder = &MFB;
@@ -2412,7 +2449,7 @@ static SRes LzmaEnc_CodeOneBlock(CLzmaEnc *p, UInt32 maxPackSize, UInt32 maxUnpa
   nowPos32 = (UInt32)p->nowPos64;
   startPos32 = nowPos32;
 
-  if (p->nowPos64 == 0)
+  if (p->nowPos64 == 0 && !p->primed)
   {
     unsigned numPairs;
     Byte curByte;
@@ -3118,6 +3155,83 @@ SRes LzmaEnc_MemEncode(CLzmaEncHandle p, Byte *dest, SizeT *destLen, const Byte 
   return res;
 }
 
+
+/* QZip (2026): primed raw LZMA for parallel blocks that share one window.
+   Encodes src[prefixLen..totalLen) as a raw LZMA stream (no end mark) whose
+   matches may reach back to src[0]. The binary-tree match finder covers only the
+   last denseLen bytes of the prefix plus the block; older prefix bytes are reached
+   through a content-defined 12-byte hash table (ldmBits > 0), whose candidates are
+   offered to the optimal parser next to the tree matches. Encoder-side only: the
+   stream is plain LZMA and decodes with a dictionary preset to src[0..prefixLen).
+   p->dictSize (set by the caller, >= totalLen) is what goes into the props.
+   Requires the single-thread match finder (numThreads = 1). */
+SRes LzmaEnc_MemEncodePrimed(CLzmaEncHandle p, Byte *dest, SizeT *destLen,
+    const Byte *src, SizeT prefixLen, SizeT totalLen, SizeT denseLen, unsigned ldmBits,
+    ISzAllocPtr alloc, ISzAllocPtr allocBig)
+{
+  SRes res;
+  CLzmaEnc_SeqOutStreamBuf outStream;
+  const UInt32 fullDict = p->dictSize;
+  const SizeT dense = prefixLen < denseLen ? prefixLen : denseLen;
+  const SizeT farLen = prefixLen - dense;
+  outStream.vt.Write = SeqOutStreamBuf_Write;
+  outStream.data = dest;
+  outStream.rem = *destLen;
+  outStream.overflow = False;
+  p->writeEndMark = 0;
+  p->rc.outStream = &outStream.vt;
+  #ifndef Z7_ST
+  if (p->multiThread)
+    return SZ_ERROR_PARAM;
+  #endif
+  if (totalLen > fullDict || ldmBits > 30)
+    return SZ_ERROR_PARAM;
+  p->dictSize = (UInt32)(totalLen - farLen);
+  if (p->dictSize < (1 << 12))
+    p->dictSize = 1 << 12;
+  res = LzmaEnc_MemPrepare(p, src + farLen, totalLen - farLen, 0, alloc, allocBig);
+  p->dictSize = fullDict;
+  if (res == SZ_OK)
+  {
+    unsigned i;
+    for (i = kEndPosModelIndex / 2; i < kDicLogSizeMax; i++)
+      if (p->dictSize <= ((UInt32)1 << i))
+        break;
+    p->distTableSize = i * 2;
+    LzmaEnc_InitPrices(p);
+    p->matchFinder.Init(p->matchFinderObj);
+    p->needInit = 0;
+    if (ldmBits && farLen >= QZ_LDM_K)
+    {
+      SizeT k;
+      const SizeT lim = farLen - QZ_LDM_K + 1;
+      p->ldmShift = 32 - ldmBits;
+      p->ldmBase = src;
+      p->ldmTab = (UInt32 *)ISzAlloc_Alloc(allocBig, ((size_t)1 << ldmBits) * 4);
+      if (!p->ldmTab)
+        return SZ_ERROR_MEM;
+      memset(p->ldmTab, 0, ((size_t)1 << ldmBits) * 4);
+      for (k = 0; k < lim; k++)
+        p->ldmTab[QzLdmHash(src + k) >> p->ldmShift] = (UInt32)k + 1;
+    }
+    if (dense)
+      p->matchFinder.Skip(p->matchFinderObj, (UInt32)dense);
+    p->primed = (prefixLen != 0);
+    res = LzmaEnc_Encode2(p, NULL);
+    p->primed = 0;
+    if (p->ldmTab)
+    {
+      ISzAlloc_Free(allocBig, p->ldmTab);
+      p->ldmTab = NULL;
+    }
+    if (res == SZ_OK && p->nowPos64 != totalLen - prefixLen)
+      res = SZ_ERROR_FAIL;
+  }
+  *destLen -= (SizeT)outStream.rem;
+  if (outStream.overflow)
+    return SZ_ERROR_OUTPUT_EOF;
+  return res;
+}
 
 SRes LzmaEncode(Byte *dest, SizeT *destLen, const Byte *src, SizeT srcLen,
     const CLzmaEncProps *props, Byte *propsEncoded, SizeT *propsSize, int writeEndMark,
