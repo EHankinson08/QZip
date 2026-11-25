@@ -556,15 +556,8 @@ static int kind_of(const uint8_t *p, size_t n) {
       if (mach==0xaa64) return 2; if (mach==0x1c0||mach==0x1c4) return 3;
     }
   }
-  if (n>=20) {
-    unsigned m = p[0]|p[1]<<8;
-    if (m==0x14c||m==0x183||m==0x152||m==0x15c||m==0x17c||m==0x1c0) {
-      unsigned nscns = p[2]|p[3]<<8;
-      if (nscns>0 && nscns<100) return 1;
-    }
-    if (m==0x8664) return 1;
-    if (m==0xaa64) return 2;
-  }
+  /* Bare COFF (mozilla's i386 0x0183 .so members) is skipped: BCJ on those
+     made solid LZMA larger. ELF and PE are still filtered above. */
   return 0;
 }
 static void apply_enc(uint8_t *p, size_t n, int kind) {
@@ -582,8 +575,16 @@ static void apply_dec(uint8_t *p, size_t n, int kind) {
 typedef struct { uint32_t off, len; uint8_t kind; } fr_t;
 static void collect_ranges(const uint8_t *s, size_t n, fr_t **R, int *nr) {
   int cap = 16, nrr = 0; fr_t *r = (fr_t *)malloc((size_t)cap * sizeof(fr_t));
-  if (n >= 262 && !memcmp(s+257, "ustar", 5)) {
-    size_t p = 0;
+  size_t base = 0;
+  if (n >= 10 && !memcmp(s, "QZTAR1", 6)) {
+    int nm = (int)r32le(s + 6);
+    if (nm >= 2 && nm <= 1000000) {
+      size_t hdr = 10 + (size_t)nm * 4;
+      if (hdr + 262 <= n && !memcmp(s + hdr + 257, "ustar", 5)) base = hdr;
+    }
+  }
+  if (n >= base + 262 && !memcmp(s+base+257, "ustar", 5)) {
+    size_t p = base;
     while (p + 512 <= n) {
       int z=1; for (int i=0;i<512;i++) if (s[p+i]) { z=0; break; }
       if (z) { p+=512; continue; }
@@ -638,4 +639,267 @@ int xf_bcj_decode(const uint8_t *t, size_t tn, uint8_t *dst, size_t want) {
     apply_dec(dst + off, len, kind);
   }
   return 0;
+}
+
+/* -------- Sort ustar members by extension (QZTAR1).
+   Units keep GNU long-name / pax headers attached. Trailing zero blocks stay at the end. */
+typedef struct { size_t off, len; char ext[16]; } tu_t;
+static void tu_ext(const char *name, char *ext) {
+  const char *base = strrchr(name, '/'); base = base ? base + 1 : name;
+  const char *dot = strrchr(base, '.');
+  ext[0] = 0;
+  if (!dot || dot == base || !dot[1]) return;
+  int n = 0;
+  for (const char *p = dot + 1; *p && n < 15; p++) {
+    char ch = *p;
+    if (ch >= 'A' && ch <= 'Z') ch = (char)(ch - 'A' + 'a');
+    if (!((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '+')) break;
+    ext[n++] = ch;
+  }
+  ext[n] = 0;
+}
+static int tu_parse(const uint8_t *s, size_t n, tu_t **out, int *nm, size_t *trail) {
+  *out = NULL; *nm = 0; *trail = n;
+  if (n < 262 || memcmp(s + 257, "ustar", 5)) return 0;
+  int cap = 64, k = 0; tu_t *M = (tu_t *)malloc((size_t)cap * sizeof(tu_t));
+  if (!M) return 0;
+  size_t p = 0;
+  while (p + 512 <= n) {
+    int z = 1; for (int i = 0; i < 512; i++) if (s[p + i]) { z = 0; break; }
+    if (z) { *trail = p; break; }
+    size_t start = p;
+    char longname[256]; longname[0] = 0;
+    for (;;) {
+      if (p + 512 > n) { free(M); return 0; }
+      unsigned long long sz = tar_octal(s + p + 124, 12);
+      unsigned typ = s[p + 156];
+      size_t rec = 512 + (size_t)((sz + 511) / 512) * 512;
+      if (p + rec > n) { free(M); return 0; }
+      if (typ == 'L' || typ == 'K' || typ == 'x' || typ == 'g' || typ == 'X') {
+        if (typ == 'L' && sz < sizeof(longname) - 1) {
+          memcpy(longname, s + p + 512, (size_t)sz); longname[sz] = 0;
+        }
+        p += rec;
+        continue;
+      }
+      const char *nmstr = longname[0] ? longname : (const char *)(s + p);
+      char name[101];
+      if (!longname[0]) { memcpy(name, s + p, 100); name[100] = 0; nmstr = name; }
+      if (k == cap) { cap *= 2; tu_t *N = (tu_t *)realloc(M, (size_t)cap * sizeof(tu_t)); if (!N) { free(M); return 0; } M = N; }
+      M[k].off = start;
+      p += rec;
+      M[k].len = p - start;
+      tu_ext(nmstr, M[k].ext);
+      k++;
+      break;
+    }
+  }
+  *out = M; *nm = k; return 1;
+}
+static int tu_cmp(const void *a, const void *b) {
+  const tu_t *x = a, *y = b;
+  int c = strcmp(x->ext, y->ext);
+  if (c) return c;
+  if (x->off < y->off) return -1;
+  if (x->off > y->off) return 1;
+  return 0;
+}
+int xf_tar_sort_encode(const uint8_t *s, size_t n, uint8_t **out, size_t *on) {
+  tu_t *M; int nm; size_t trail;
+  if (!tu_parse(s, n, &M, &nm, &trail) || nm < 2) { free(M); return 0; }
+  tu_t *S = (tu_t *)malloc((size_t)nm * sizeof(tu_t));
+  if (!S) { free(M); return 0; }
+  memcpy(S, M, (size_t)nm * sizeof(tu_t));
+  qsort(S, (size_t)nm, sizeof(tu_t), tu_cmp);
+  int changed = 0;
+  for (int i = 0; i < nm; i++) if (S[i].off != M[i].off) { changed = 1; break; }
+  if (!changed) { free(M); free(S); return 0; }
+  /* Only reorder when a same-extension run is large. Sorting samba (max group
+     6.9 MB of .c) grew the solid stream past 7z-9; mozilla .so (~44 MB) and
+     mixed .py/.pyc (~11 MB each) shrink. */
+  {
+    size_t mx = 0;
+    for (int i = 0; i < nm; ) {
+      int j = i; size_t bytes = 0;
+      while (j < nm && strcmp(S[j].ext, S[i].ext) == 0) { bytes += S[j].len; j++; }
+      if (bytes > mx) mx = bytes;
+      i = j;
+    }
+    if (mx < ((size_t)8 << 20)) { free(M); free(S); return 0; }
+  }
+  /* map sorted unit i -> original index */
+  xbuf o = {0};
+  xput(&o, "QZTAR1", 6);
+  uint8_t nb[4]; w32le(nb, (uint32_t)nm); xput(&o, nb, 4);
+  for (int i = 0; i < nm; i++) {
+    int orig = -1;
+    for (int j = 0; j < nm; j++) if (M[j].off == S[i].off) { orig = j; break; }
+    if (orig < 0) { free(o.b); free(M); free(S); return 0; }
+    w32le(nb, (uint32_t)orig); xput(&o, nb, 4);
+  }
+  for (int i = 0; i < nm; i++) xput(&o, s + S[i].off, S[i].len);
+  if (trail < n) xput(&o, s + trail, n - trail);
+  free(M); free(S);
+  *out = o.b; *on = o.n; return 1;
+}
+int xf_tar_sort_decode(const uint8_t *t, size_t tn, uint8_t *dst, size_t want) {
+  if (tn < 10 || memcmp(t, "QZTAR1", 6)) return 1;
+  int nm = (int)r32le(t + 6);
+  if (nm < 2 || nm > 1000000) return 1;
+  size_t hdr = 10 + (size_t)nm * 4;
+  if (tn < hdr || tn - hdr != want) return 1;
+  const uint8_t *body = t + hdr;
+  tu_t *U; int un; size_t trail;
+  if (!tu_parse(body, want, &U, &un, &trail) || un != nm) { free(U); return 1; }
+  /* place unit i (in sorted body) back at original index orig[i] */
+  size_t *olen = (size_t *)malloc((size_t)nm * sizeof(size_t));
+  if (!olen) { free(U); return 1; }
+  for (int i = 0; i < nm; i++) {
+    uint32_t orig = r32le(t + 10 + (size_t)i * 4);
+    if (orig >= (uint32_t)nm) { free(olen); free(U); return 1; }
+    olen[orig] = U[i].len;
+  }
+  size_t *ooff = (size_t *)malloc((size_t)nm * sizeof(size_t));
+  if (!ooff) { free(olen); free(U); return 1; }
+  size_t acc = 0;
+  for (int i = 0; i < nm; i++) { ooff[i] = acc; acc += olen[i]; }
+  if (acc > want) { free(olen); free(ooff); free(U); return 1; }
+  for (int i = 0; i < nm; i++) {
+    uint32_t orig = r32le(t + 10 + (size_t)i * 4);
+    memcpy(dst + ooff[orig], body + U[i].off, U[i].len);
+  }
+  if (trail < want) memcpy(dst + acc, body + trail, want - trail);
+  else if (acc != want) { free(olen); free(ooff); free(U); return 1; }
+  free(olen); free(ooff); free(U);
+  return 0;
+}
+
+/* Bytes of ustar members whose extension equals ext (lower-case, no dot). 0 if not a parsable ustar. */
+size_t xf_tar_ext_bytes(const uint8_t *s, size_t n, const char *ext) {
+  tu_t *M; int nm; size_t trail, t = 0;
+  if (!tu_parse(s, n, &M, &nm, &trail)) { free(M); return 0; }
+  for (int i = 0; i < nm; i++) if (!strcmp(M[i].ext, ext)) t += M[i].len;
+  free(M); return t;
+}
+
+/* Bytes of ustar members that are fixed-width-instruction (RISC) executables: Alpha COFF
+   (0x0183/0x0184, e.g. silesia mozilla's Tru64 .so) or ELF for Alpha/ARM/AArch64/PowerPC/
+   SPARC/MIPS/RISC-V. LZMA does better on these with 4-byte literal alignment (lc0 lp2 pb2). */
+static int risc_exe(const uint8_t *p, size_t n) {
+  if (n >= 2 && p[0] == 0x83 && (p[1] == 0x01 || p[1] == 0x02)) return 1;   /* LE 0x0183 / 0x0283 */
+  if (n >= 2 && p[0] == 0x84 && p[1] == 0x01) return 1;
+  if (n >= 20 && !memcmp(p, "\x7f" "ELF", 4)) {
+    unsigned m = p[5] == 2 ? ((unsigned)p[18] << 8 | p[19]) : ((unsigned)p[19] << 8 | p[18]);
+    return m == 0x9026 || m == 40 || m == 183 || m == 20 || m == 21 || m == 2 || m == 18 || m == 43 || m == 8 || m == 243;
+  }
+  return 0;
+}
+size_t xf_tar_risc_bytes(const uint8_t *s, size_t n) {
+  tu_t *M; int nm; size_t trail, t = 0;
+  if (!tu_parse(s, n, &M, &nm, &trail)) { free(M); return 0; }
+  for (int i = 0; i < nm; i++) {
+    size_t p = M[i].off, end = M[i].off + M[i].len;
+    while (p + 512 <= end) {
+      unsigned typ = s[p + 156];
+      unsigned long long sz = tar_octal(s + p + 124, 12);
+      if (typ == 'L' || typ == 'K' || typ == 'x' || typ == 'g' || typ == 'X') { p += 512 + (size_t)((sz + 511) / 512) * 512; continue; }
+      if (sz && p + 512 + sz <= end && risc_exe(s + p + 512, (size_t)sz)) t += (size_t)sz;
+      break;
+    }
+  }
+  free(M); return t;
+}
+
+/* -------- PDF: move zlib-headed stream bodies after everything else (QZPDF1).
+   Pure byte rearrangement (no inflate). Candidates are "stream" + LF or CRLF not preceded by "end";
+   a body [s, e) up to the next "endstream" moves when it starts with a valid zlib header. Layout:
+   "QZPDF1" u32 ncand u32 nz u32 olen | flag bits | u32 len[nz] | O (rest, original order) | Z (bodies).
+   The decoder rescans O with the same rule, so positions are not stored. */
+static size_t pdf_find(const uint8_t *s, size_t n, size_t p, const char *w, size_t wl) {
+  while (p + wl <= n) {
+    const uint8_t *q = (const uint8_t *)memchr(s + p, w[0], n - p - wl + 1);
+    if (!q) return (size_t)-1;
+    size_t k = (size_t)(q - s);
+    if (!memcmp(s + k, w, wl)) return k;
+    p = k + 1;
+  }
+  return (size_t)-1;
+}
+/* next candidate at or after p: returns body start s (after the EOL) or (size_t)-1; *cand = 1 if not "end"-prefixed */
+static size_t pdf_next(const uint8_t *s, size_t n, size_t p, int *cand) {
+  for (;;) {
+    size_t q = pdf_find(s, n, p, "stream", 6);
+    if (q == (size_t)-1) return q;
+    size_t b;
+    if (q + 6 < n && s[q + 6] == '\n') b = q + 7;
+    else if (q + 7 < n && s[q + 6] == '\r' && s[q + 7] == '\n') b = q + 8;
+    else { p = q + 1; continue; }
+    *cand = !(q >= 3 && !memcmp(s + q - 3, "end", 3));
+    return b;
+  }
+}
+size_t xf_pdf_split_encode(const uint8_t *s, size_t n, uint8_t **out, size_t *on) {
+  *out = NULL; *on = 0;
+  if (n < 16 || memcmp(s, "%PDF", 4) || n > 0xFFFFFFFFu) return 0;
+  size_t ncand = 0, nz = 0, zb = 0, capc = 4096, capz = 256;
+  uint8_t *fl = (uint8_t *)calloc(capc / 8 + 1, 1); uint32_t *ln = (uint32_t *)malloc(capz * 4); size_t *zs = (size_t *)malloc(capz * sizeof(size_t));
+  if (!fl || !ln || !zs) { free(fl); free(ln); free(zs); return 0; }
+  size_t p = 0;
+  for (;;) {
+    int cand = 0; size_t b = pdf_next(s, n, p, &cand);
+    if (b == (size_t)-1) break;
+    if (!cand) { p = b; continue; }
+    size_t e = pdf_find(s, n, b, "endstream", 9);
+    int ok = e != (size_t)-1 && e - b >= 2 && (s[b] & 0x0f) == 8 && ((((unsigned)s[b] << 8) | s[b + 1]) % 31) == 0;
+    if (ncand + 1 >= capc) { size_t nc = capc * 2; uint8_t *f2 = (uint8_t *)realloc(fl, nc / 8 + 1); if (!f2) goto fail; memset(f2 + capc / 8 + 1, 0, nc / 8 - capc / 8); fl = f2; capc = nc; }
+    if (ok) {
+      fl[ncand >> 3] |= (uint8_t)(1u << (ncand & 7));
+      if (nz == capz) { capz *= 2; uint32_t *l2 = (uint32_t *)realloc(ln, capz * 4); size_t *z2 = (size_t *)realloc(zs, capz * sizeof(size_t)); if (l2) ln = l2; if (z2) zs = z2; if (!l2 || !z2) goto fail; }
+      ln[nz] = (uint32_t)(e - b); zs[nz] = b; zb += e - b; nz++; p = e;
+    } else p = b;
+    ncand++;
+  }
+  if (!nz) goto fail;
+  {
+    size_t fb = (ncand + 7) / 8, olen = n - zb, hl = 18 + fb + nz * 4;
+    uint8_t *o = (uint8_t *)malloc(hl + n);
+    if (!o) goto fail;
+    memcpy(o, "QZPDF1", 6); w32le(o + 6, (uint32_t)ncand); w32le(o + 10, (uint32_t)nz); w32le(o + 14, (uint32_t)olen);
+    memcpy(o + 18, fl, fb);
+    for (size_t k = 0; k < nz; k++) w32le(o + 18 + fb + k * 4, ln[k]);
+    uint8_t *op = o + hl, *zp = o + hl + olen; size_t i = 0;
+    for (size_t k = 0; k < nz; k++) { memcpy(op, s + i, zs[k] - i); op += zs[k] - i; memcpy(zp, s + zs[k], ln[k]); zp += ln[k]; i = zs[k] + ln[k]; }
+    memcpy(op, s + i, n - i);
+    free(fl); free(ln); free(zs);
+    *out = o; *on = hl + n; return hl + olen;   /* return value = where Z starts */
+  }
+fail:
+  free(fl); free(ln); free(zs); return 0;
+}
+int xf_pdf_split_decode(const uint8_t *t, size_t tn, uint8_t *dst, size_t want) {
+  if (tn < 18 || memcmp(t, "QZPDF1", 6)) return 1;
+  size_t ncand = r32le(t + 6), nz = r32le(t + 10), olen = r32le(t + 14), fb = (ncand + 7) / 8;
+  if (18 + fb + nz * 4 > tn) return 1;
+  const uint8_t *fl = t + 18, *lp = t + 18 + fb, *O = lp + nz * 4;
+  size_t hl = 18 + fb + nz * 4;
+  if (hl + olen > tn) return 1;
+  const uint8_t *Z = O + olen; size_t zl = tn - hl - olen;
+  if (olen + zl != want) return 1;
+  size_t p = 0, i = 0, d = 0, zi = 0, k = 0, c = 0;
+  while (c < ncand) {
+    int cand = 0; size_t b = pdf_next(O, olen, p, &cand);
+    if (b == (size_t)-1) return 1;
+    if (!cand) { p = b; continue; }
+    if (fl[c >> 3] & (1u << (c & 7))) {
+      if (k >= nz) return 1;
+      size_t L = r32le(lp + k * 4); k++;
+      if (zi + L > zl) return 1;
+      memcpy(dst + d, O + i, b - i); d += b - i; i = b;
+      memcpy(dst + d, Z + zi, L); d += L; zi += L;
+    }
+    p = b; c++;
+  }
+  if (k != nz || zi != zl) return 1;
+  memcpy(dst + d, O + i, olen - i); d += olen - i;
+  return d != want;
 }

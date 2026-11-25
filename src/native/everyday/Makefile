@@ -4,7 +4,7 @@ CC     ?= cc
 CXX    ?= c++
 OPT    ?= -O3
 EXE    ?=
-CFLAGS += $(OPT) -DNDEBUG -DZSTD_DISABLE_ASM -DZSTD_LEGACY_SUPPORT=0 -DZ7_ST -DZ7_NO_LARGE_PAGES -Ilzma -w
+CFLAGS += $(OPT) -DNDEBUG -DZSTD_DISABLE_ASM -DZSTD_LEGACY_SUPPORT=0 -DZ7_NO_LARGE_PAGES -D_GNU_SOURCE -Ilzma -w
 OBJ    ?= obj
 ZSRC   := $(wildcard zstd/common/*.c zstd/compress/*.c zstd/decompress/*.c)
 LSRC   := $(wildcard lzma/*.c)
