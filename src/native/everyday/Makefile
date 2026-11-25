@@ -4,18 +4,22 @@ CC     ?= cc
 CXX    ?= c++
 OPT    ?= -O3
 EXE    ?=
-CFLAGS += $(OPT) -DNDEBUG -DZSTD_DISABLE_ASM -DZSTD_LEGACY_SUPPORT=0 -w
+CFLAGS += $(OPT) -DNDEBUG -DZSTD_DISABLE_ASM -DZSTD_LEGACY_SUPPORT=0 -DZ7_ST -DZ7_NO_LARGE_PAGES -Ilzma -w
 OBJ    ?= obj
 ZSRC   := $(wildcard zstd/common/*.c zstd/compress/*.c zstd/decompress/*.c)
+LSRC   := $(wildcard lzma/*.c)
 BSRC   := $(shell find ../libbsc -name '*.cpp')
 ZOBJ   := $(patsubst %.c,$(OBJ)/%.o,$(ZSRC))
+LOBJ   := $(patsubst lzma/%.c,$(OBJ)/lzma/%.o,$(LSRC))
 BOBJ   := $(patsubst ../libbsc/%.cpp,$(OBJ)/bsc/%.o,$(BSRC)) $(OBJ)/bsc/libsais.o
 LIBS   ?= -lpthread
 
-qze$(EXE): $(OBJ)/qze.o $(ZOBJ) $(BOBJ)
+qze$(EXE): $(OBJ)/qze.o $(ZOBJ) $(LOBJ) $(BOBJ)
 	$(CXX) $(OPT) -o $@ $^ $(LIBS)
 $(OBJ)/qze.o: qze.c
 	@mkdir -p $(dir $@); $(CC) $(CFLAGS) -std=c11 -c $< -o $@
+$(OBJ)/lzma/%.o: lzma/%.c
+	@mkdir -p $(dir $@); $(CC) $(CFLAGS) -c $< -o $@
 $(OBJ)/zstd/%.o: zstd/%.c
 	@mkdir -p $(dir $@); $(CC) $(CFLAGS) -c $< -o $@
 $(OBJ)/bsc/libsais.o: ../libbsc/bwt/libsais/libsais.c

@@ -5,12 +5,16 @@
  *
  * The input is cut into independent blocks (CSV/TSV: at line ends), each block is optionally run through QZip's CSV
  * column transform (transpose to column-major, numeric columns -> zigzag-delta varints, fixed decimals kept exact)
- * and then coded by one backend: zstd (vendored 1.5.7, BSD) or libbsc (vendored 3.4.1, Apache-2.0; BWT + QLFC).
- * Blocks are compressed AND decompressed in parallel. Every block carries the XXH64 of its raw bytes; the decoder
- * checks it. Portable C11 + libbsc (C++); threads via pthreads or Win32. No x86 intrinsics.
+ * and then coded by one backend: zstd (vendored 1.5.7, BSD), libbsc (vendored 3.4.1, Apache-2.0; BWT + QLFC),
+ * or LZMA (vendored LZMA SDK 26.06, public domain; Igor Pavlov). Quick may also apply a SQLite page-type grouping
+ * transform before LZMA. Blocks are compressed AND decompressed in parallel. Every block carries the XXH64 of its
+ * raw bytes; the decoder checks it. Portable C11 + libbsc (C++); threads via pthreads or Win32. LZMA itself is
+ * built single-thread (Z7_ST); parallelism is at block level. No x86-only required intrinsics.
  *
  * Format "QZE1": magic[4] u8 ver=1 u8 tier u8 delim(0=none) u8 flags | u64 n | u32 nblocks
- *   per block: u8 backend(0 stored,1 zstd,2 bsc) u8 transform(0 none,1 csv) u32 rawlen u32 tlen u32 clen u64 xxh64
+ *   per block: u8 backend(0 stored,1 zstd,2 bsc,3 lzma) u8 transform(0 none,1 csv,2 sqlite-pages)
+ *              u32 rawlen u32 tlen u32 clen u64 xxh64
+ *   LZMA payload is 5-byte props + packed bytes. SQLite transform is self-contained per block (QZSQL1).
  *   payloads follow in block order. */
 #define _FILE_OFFSET_BITS 64
 #include <stdio.h>
@@ -23,6 +27,8 @@
 #define XXH_INLINE_ALL
 #include "zstd/common/xxhash.h"
 #include "../libbsc/libbsc.h"
+#define Z7_ST 1
+#include "LzmaLib.h"
 #ifdef _WIN32
 #include <windows.h>
 #include <io.h>
@@ -43,6 +49,8 @@ static void w32(uint8_t *p, uint32_t v) { for (int i = 0; i < 4; i++) p[i] = (ui
 static void w64(uint8_t *p, uint64_t v) { for (int i = 0; i < 8; i++) p[i] = (uint8_t)(v >> (8 * i)); }
 static uint32_t r32(const uint8_t *p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
 static uint64_t r64(const uint8_t *p) { uint64_t v = 0; for (int i = 7; i >= 0; i--) v = v << 8 | p[i]; return v; }
+static void w32be(uint8_t *p, uint32_t v) { p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16); p[2] = (uint8_t)(v >> 8); p[3] = (uint8_t)v; }
+static uint32_t r32be(const uint8_t *p) { return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3]; }
 static uint64_t zz(int64_t v) { return ((uint64_t)v << 1) ^ (uint64_t)(v >> 63); }
 static int64_t uz(uint64_t v) { return (int64_t)(v >> 1) ^ -(int64_t)(v & 1); }
 
@@ -239,9 +247,12 @@ static int ncpu(void) {
 }
 
 /* ------------------------------------------------------------------ blocks */
-enum { B_STORED = 0, B_ZSTD = 1, B_BSC = 2 };
+enum { B_STORED = 0, B_ZSTD = 1, B_BSC = 2, B_LZMA = 3 };
 typedef struct { const uint8_t *raw; size_t rawlen; uint8_t backend, transform; buf t; buf c; uint64_t h; int err; } blk_t;
-typedef struct { blk_t *b; int tier, delim, zlevel, first_csv; } cctx_t;
+typedef struct { blk_t *b; int tier, delim, zlevel, first_csv; int lzma_level; unsigned lzma_dict; unsigned pagesz; int lzp_min; } cctx_t;
+#ifndef LZMA_SOLID_MAX
+#define LZMA_SOLID_MAX ((size_t)32 << 20)   /* solid lzma-9 only on files up to this size (Quick speed cap) */
+#endif
 
 static int is_texty(const uint8_t *s, size_t n) {
   size_t k = n < 65536 ? n : 65536, bad = 0; for (size_t i = 0; i < k; i++) { uint8_t c = s[i]; bad += (c < 9 || (c > 13 && c < 32) || c == 127); }
@@ -263,6 +274,66 @@ static size_t bsc_into(buf *o, const uint8_t *s, size_t n, int coder) {
   o->n = 0; bres(o, n + LIBBSC_HEADER_SIZE + 64);
   int r = bsc_compress(s, o->b, (int)n, 16, 128, LIBBSC_BLOCKSORTER_BWT, coder, LIBBSC_FEATURE_FASTMODE);
   if (r < 0) return 0; o->n = (size_t)r; return (size_t)r;
+}
+static size_t lzma_into(buf *o, const uint8_t *s, size_t n, int level, unsigned dict) {
+  size_t cap = n + n / 3 + 65536 + LZMA_PROPS_SIZE;
+  o->n = 0; bres(o, cap);
+  size_t destLen = cap - LZMA_PROPS_SIZE, propsSize = LZMA_PROPS_SIZE;
+  int r = LzmaCompress(o->b + LZMA_PROPS_SIZE, &destLen, s, n, o->b, &propsSize, level, dict, -1, -1, -1, -1, 1);
+  if (r != SZ_OK || propsSize != LZMA_PROPS_SIZE) return 0;
+  o->n = LZMA_PROPS_SIZE + destLen; return o->n;
+}
+static int lzma_from(uint8_t *dst, size_t want, const uint8_t *c, size_t cl) {
+  if (cl < LZMA_PROPS_SIZE) return 1;
+  size_t destLen = want, srcLen = cl - LZMA_PROPS_SIZE;
+  int r = LzmaUncompress(dst, &destLen, c + LZMA_PROPS_SIZE, &srcLen, c, LZMA_PROPS_SIZE);
+  return !(r == SZ_OK && destLen == want);
+}
+static unsigned sqlite_pagesz(const uint8_t *s, size_t n) {
+  if (n < 100 || memcmp(s, "SQLite format 3", 15) || s[15] != 0) return 0;
+  unsigned ps = ((unsigned)s[16] << 8) | s[17];
+  if (ps == 1) ps = 65536;
+  if (ps < 512 || ps > 65536 || (ps & (ps - 1))) return 0;
+  return ps;
+}
+static int sqlite_encode(const uint8_t *s, size_t n, unsigned ps, int first_special, buf *o) {
+  if (!ps || n < (size_t)ps) return 0;
+  size_t np = n / ps, tlen = n % ps;
+  uint8_t *types = (uint8_t *)malloc(np ? np : 1);
+  if (!types) return 0;
+  for (size_t i = 0; i < np; i++) {
+    const uint8_t *p = s + i * ps;
+    types[i] = (i == 0 && first_special && ps >= 101) ? p[100] : p[0];
+  }
+  o->n = 0;
+  put(o, "QZSQL1", 6);
+  uint8_t hdr[12]; w32be(hdr, ps); w32be(hdr + 4, (uint32_t)np); w32be(hdr + 8, (uint32_t)tlen); put(o, hdr, 12);
+  put(o, types, np);
+  for (int ty = 0; ty < 256; ty++)
+    for (size_t i = 0; i < np; i++)
+      if (types[i] == (uint8_t)ty) put(o, s + i * ps, ps);
+  if (tlen) put(o, s + np * ps, tlen);
+  free(types);
+  return 1;
+}
+static int sqlite_decode(const uint8_t *s, size_t n, uint8_t *dst, size_t want) {
+  if (n < 18 || memcmp(s, "QZSQL1", 6)) return -1;
+  unsigned ps = r32be(s + 6); size_t np = r32be(s + 10), tlen = r32be(s + 14);
+  if ((size_t)ps * np + tlen != want) return -1;
+  if (18 + np + (size_t)ps * np + tlen != n) return -1;
+  const uint8_t *types = s + 18, *body = s + 18 + np;
+  size_t off[256], cnt[256];
+  memset(cnt, 0, sizeof cnt);
+  for (size_t i = 0; i < np; i++) cnt[types[i]]++;
+  size_t acc = 0;
+  for (int ty = 0; ty < 256; ty++) { off[ty] = acc; acc += cnt[ty]; }
+  for (size_t i = 0; i < np; i++) {
+    unsigned ty = types[i];
+    memcpy(dst + i * ps, body + off[ty] * ps, ps);
+    off[ty]++;
+  }
+  if (tlen) memcpy(dst + np * ps, body + np * ps, tlen);
+  return 0;
 }
 #ifndef B2LV
 #define B2LV 6
@@ -306,19 +377,26 @@ static void comp_block(job_t *j, size_t i) {
       for (int k = 0; k < 3; k++) {
         const uint8_t *src = b->raw; size_t sn = sl;
         if (k > 0) { if (!try_csv(&sb, C->delim, i == 0, k == 2, &sb.t)) continue; src = sb.t.b; sn = sb.t.n; }
-        if (bsc_into2(&c, src, sn, LIBBSC_BLOCKSORTER_BWT, LIBBSC_CODER_QLFC_STATIC, 0) && c.n < bestn) { bestn = c.n; cand = k; }
+        if (bsc_into2(&c, src, sn, LIBBSC_BLOCKSORTER_BWT, LIBBSC_CODER_QLFC_STATIC, C->lzp_min) && c.n < bestn) { bestn = c.n; cand = k; }
       }
       free(c.b); free(sb.t.b);
     }
     const uint8_t *src = b->raw; size_t sn = b->rawlen;
     if (cand > 0 && try_csv(b, C->delim, i == 0, cand == 2, &b->t)) { src = b->t.b; sn = b->t.n; b->transform = 1; }
+    else if (C->pagesz && sqlite_encode(b->raw, b->rawlen, C->pagesz, i == 0, &b->t)) { src = b->t.b; sn = b->t.n; b->transform = 2; }
+    if (C->lzma_level > 0) {
+      int lv = C->lzma_level; unsigned dict = C->lzma_dict;
+      b->backend = B_LZMA; if (!lzma_into(&b->c, src, sn, lv, dict)) b->err = 1;
+      if (!b->err && b->c.n >= sn) { b->backend = B_STORED; b->c.n = 0; put(&b->c, src, sn); }
+      return;
+    }
     int usebsc = b->transform || is_texty(src, sn);
     if (!usebsc) {   /* binary: BWT often beats LZ on tables / databases / executables; decide on a head sample */
       size_t sl = sn < SAMPLE ? sn : SAMPLE; buf c1 = {0}, c2 = {0}; int lg = 10; while (((size_t)1 << lg) < sl && lg < 27) lg++;
-      size_t a1 = bsc_into2(&c1, src, sl, LIBBSC_BLOCKSORTER_BWT, LIBBSC_CODER_QLFC_STATIC, 0), a2 = zstd_into(&c2, src, sl, C->zlevel, lg);
+      size_t a1 = bsc_into2(&c1, src, sl, LIBBSC_BLOCKSORTER_BWT, LIBBSC_CODER_QLFC_STATIC, C->lzp_min), a2 = zstd_into(&c2, src, sl, C->zlevel, lg);
       usebsc = a1 && (!a2 || a1 * 100 < a2 * B2BIN); free(c1.b); free(c2.b);
     }
-    if (usebsc) { b->backend = B_BSC; if (!bsc_into2(&b->c, src, sn, LIBBSC_BLOCKSORTER_BWT, LIBBSC_CODER_QLFC_STATIC, 0)) b->err = 1; }
+    if (usebsc) { b->backend = B_BSC; if (!bsc_into2(&b->c, src, sn, LIBBSC_BLOCKSORTER_BWT, LIBBSC_CODER_QLFC_STATIC, C->lzp_min)) b->err = 1; }
     else { int lg = 10; while (((size_t)1 << lg) < sn && lg < 27) lg++;
            b->backend = B_ZSTD; if (!zstd_into(&b->c, src, sn, C->zlevel, lg)) b->err = 1; }
     if (!b->err && b->c.n >= sn) { b->backend = B_STORED; b->c.n = 0; put(&b->c, src, sn); }
@@ -350,15 +428,18 @@ static void dec_block(job_t *j, size_t i) {
   if (be == B_STORED) { if (cl != want) bad = 1; else memcpy(tb, c, cl); }
   else if (be == B_ZSTD) { size_t r = ZSTD_decompress(tb, want, c, cl); if (ZSTD_isError(r) || r != want) bad = 1; }
   else if (be == B_BSC) { if (bsc_decompress(c, (int)cl, tb, (int)want, LIBBSC_FEATURE_FASTMODE) != LIBBSC_NO_ERROR) bad = 1; }
+  else if (be == B_LZMA) { if (lzma_from(tb, want, c, cl)) bad = 1; }
   else bad = 1;
-  if (!bad && tr) { if (csv_decode(tb, tl, dst, raw)) bad = 1; }
+  if (!bad && tr == 1) { if (csv_decode(tb, tl, dst, raw)) bad = 1; }
+  else if (!bad && tr == 2) { if (sqlite_decode(tb, tl, dst, raw)) bad = 1; }
+  else if (!bad && tr) bad = 1;
   if (tr) free(tb);
   if (!bad && XXH64(dst, raw, 0) != xh) bad = 2;
   if (bad) D->err = bad;
 }
 
 /* Encoded size of [s, s+n) with a fixed block size (no thread-shrink). Used to pick -b. */
-static size_t measure_enc(const uint8_t *s, size_t n, size_t bs, int tier, int delim, int zl, int T) {
+static size_t measure_enc(const uint8_t *s, size_t n, size_t bs, int tier, int delim, int zl, int T, int lzp) {
   if (bs == 0) bs = n ? n : 1;
   size_t cap = n / bs + 2, nb = 0, p = 0;
   blk_t *B = (blk_t *)calloc(cap + 1, sizeof(blk_t));
@@ -368,7 +449,7 @@ static size_t measure_enc(const uint8_t *s, size_t n, size_t bs, int tier, int d
     if (nb >= cap) { cap *= 2; B = (blk_t *)realloc(B, (cap + 1) * sizeof(blk_t)); memset(B + nb, 0, (cap + 1 - nb) * sizeof(blk_t)); }
     B[nb].raw = s + p; B[nb].rawlen = e - p; nb++; p = e; if (n == 0) break;
   }
-  cctx_t C = {B, tier, delim, zl, 1};
+  cctx_t C = {B, tier, delim, zl, 1, 0, 0, 0, lzp};
   run_par(comp_block, &C, nb, T);
   size_t tot = 20 + nb * 22; int bad = 0;
   for (size_t i = 0; i < nb; i++) { if (B[i].err) bad = 1; tot += B[i].c.n; free(B[i].c.b); free(B[i].t.b); }
@@ -388,12 +469,14 @@ int main(int argc, char **argv) {
 #ifdef _WIN32
   _setmode(_fileno(stdin), _O_BINARY); _setmode(_fileno(stdout), _O_BINARY);
 #endif
-  if (argc < 4) { fprintf(stderr, "usage: qze c [-1|-2|-3] [-T n] [-b MB] [-L lvl] [-x] in out | qze d [-T n] in out\n"); return 2; }
-  int tier = 1, T = ncpu(), bmb = 0, zl = -1, nocsv = 0; int a = 2;
+  if (argc < 4) { fprintf(stderr, "usage: qze c [-1|-2|-3] [-T n] [-b MB] [-L lvl] [-M lvl] [-P lzp] [-x] in out | qze d [-T n] in out\n"); return 2; }
+  int tier = 1, T = ncpu(), bmb = 0, zl = -1, nocsv = 0, force_lzma = 0, lzp_min = 0; int a = 2;
   for (; a < argc - 2; a++) {
     if (!strcmp(argv[a], "-1")) tier = 1; else if (!strcmp(argv[a], "-2")) tier = 2; else if (!strcmp(argv[a], "-3")) tier = 3;
     else if (!strcmp(argv[a], "-T")) T = atoi(argv[++a]); else if (!strcmp(argv[a], "-b")) bmb = atoi(argv[++a]);
     else if (!strcmp(argv[a], "-L")) zl = atoi(argv[++a]); else if (!strcmp(argv[a], "-x")) nocsv = 1;
+    else if (!strcmp(argv[a], "-M")) force_lzma = atoi(argv[++a]);
+    else if (!strcmp(argv[a], "-P")) lzp_min = atoi(argv[++a]);
     else die("bad option");
   }
   if (T < 1) T = 1; if (T > 256) T = 256;
@@ -403,27 +486,106 @@ int main(int argc, char **argv) {
     if (zl < 0) zl = tier == 1 ? 0 : tier == 2 ? B2LV : 19;   /* tier 1: 0 = per block (3 CSV-transformed, 5 other) */
     size_t bs = (size_t)(bmb > 0 ? bmb : (tier == 1 ? 4 : tier == 2 ? B2MB : 32)) << 20;
     int delim = nocsv ? 0 : detect_delim(in, n);
-    /* blocks: CSV cuts at line ends; at least T blocks when the input is big enough */
+    int lzma_level = 0; unsigned lzma_dict = 0, pagesz = 0; int solid = 0;
+    /* Quick (tier 2): SQLite always gets page-type grouping + LZMA (8 MB blocks, 8 MB dict, level 9).
+       Other files at or under LZMA_SOLID_MAX: a short sample decides. Text that prefers LZMA uses the same
+       8 MB blocked path (healthapp-class logs). Binary uses solid lzma-9. Larger files stay on BWT/zstd so the
+       719 MB mix stays in the tens of MB/s — solid lzma-9 on 50–100 MB inputs is only ~2.5–4.5 MB/s. */
+    if (tier == 2) {
+      pagesz = sqlite_pagesz(in, n);
+      if (pagesz) { delim = 0; lzma_level = 9; lzma_dict = 8u << 20; if (!bmb) bs = (size_t)8 << 20; }
+      else if (n <= LZMA_SOLID_MAX) {
+        /* Tarballs / PDFs / executables: a short prefix is a poor predictor (BWT can win the first
+           few MB of a ustar of source, then lose on the whole file). Use solid lzma-9 directly. */
+        int container = 0;
+        if (n >= 4 && (!memcmp(in, "%PDF", 4) || !memcmp(in, "ELF", 4) || !memcmp(in, "PK", 4))) container = 1;
+        if (n >= 2 && in[0] == 'M' && in[1] == 'Z') container = 1;
+        if (n >= 262 && !memcmp(in + 257, "ustar", 5)) container = 1;
+        if (container) { lzma_level = 9; lzma_dict = 0; if (!bmb) { bs = n ? n : 1; solid = 1; } }
+        else {
+          /* logs / prose: a 4 MB sample is enough (1 MB missed healthapp; 4 MB does not). */
+          size_t sl = n < ((size_t)4 << 20) ? n : ((size_t)4 << 20);
+          buf c1 = {0}, c2 = {0}, c3 = {0};
+          size_t a1 = bsc_into2(&c1, in, sl, LIBBSC_BLOCKSORTER_BWT, LIBBSC_CODER_QLFC_STATIC, 0);
+          int lg = 10; while (((size_t)1 << lg) < sl && lg < 27) lg++;
+          size_t a2 = zstd_into(&c2, in, sl, zl, lg);
+          size_t a3 = lzma_into(&c3, in, sl, 9, 8u << 20);
+          /* pipe-delimited logs (healthapp) look like CSV to detect_delim; only keep CSV if it actually helps. */
+          size_t a_csv = 0;
+          if (delim) {
+            blk_t sb = {0}; sb.raw = in; sb.rawlen = sl;
+            if (try_csv(&sb, delim, 1, 0, &sb.t) || try_csv(&sb, delim, 1, 1, &sb.t)) {
+              buf cc = {0};
+              a_csv = bsc_into2(&cc, sb.t.b, sb.t.n, LIBBSC_BLOCKSORTER_BWT, LIBBSC_CODER_QLFC_STATIC, 0);
+              free(cc.b);
+            }
+            free(sb.t.b);
+          }
+          int lzma_wins = a3 && (!a1 || a3 < a1) && (!a2 || a3 < a2) && (!a_csv || a3 < a_csv);
+          free(c1.b); free(c2.b); free(c3.b);
+          if (lzma_wins) {
+            delim = 0;   /* raw LZMA beat the CSV path — don't force a log through the table transform */
+            if (is_texty(in, n)) { lzma_level = 9; lzma_dict = 8u << 20; if (!bmb) bs = (size_t)8 << 20; }
+            else { lzma_level = 9; lzma_dict = 0; if (!bmb) { bs = n ? n : 1; solid = 1; } }
+          }
+        }
+      }
+    }
+    if (force_lzma > 0) {
+      lzma_level = force_lzma;
+      delim = 0;
+      if (pagesz) {
+        if (!lzma_dict) lzma_dict = 8u << 20;
+        if (!bmb) bs = (size_t)8 << 20;
+        solid = 0;
+      } else if (is_texty(in, n)) {
+        lzma_dict = 8u << 20;
+        if (!bmb) bs = (size_t)8 << 20;
+        solid = 0;
+      } else {
+        lzma_dict = 0;
+        if (!bmb) { bs = n ? n : 1; solid = 1; }
+      }
+    }
+    /* blocks: CSV cuts at line ends; SQLite cuts at page boundaries; at least T blocks when the input is big enough */
     /* spread big inputs over the threads, but never below the tier's minimum block (ratio) unless -b is given */
     size_t minb = (size_t)(tier == 1 ? 1 : tier == 2 ? 2 : 16) << 20;
-    if (!bmb && n / T < bs) { size_t e = (n + T - 1) / T; bs = e > minb ? e : minb; }
+    if (!bmb && !solid && n / T < bs) { size_t e = (n + T - 1) / T; bs = e > minb ? e : minb; }
     /* balanced, no -b: on a 16 MB prefix, pick 8 MB vs 16 MB blocks (the winner of the two) for the whole file.
-       skipped when the user passed -b (golden uses -b 2). */
-    if (tier == 2 && !bmb && n > ((size_t)16 << 20) && (delim || is_texty(in, n))) {
-      size_t pn = (size_t)16 << 20;
-      if (delim) { while (pn < n && in[pn] != '\n') pn++; if (pn < n) pn++; }
-      size_t s8 = measure_enc(in, pn, (size_t)8 << 20, tier, delim, zl, T);
-      size_t s16 = measure_enc(in, pn, (size_t)16 << 20, tier, delim, zl, T);
-      if (s16 != (size_t)-1 && s8 != (size_t)-1 && s16 < s8) { bs = (size_t)16 << 20; bmb = 16; }
+       skipped when the user passed -b (golden uses -b 2), when LZMA is already chosen, or on binaries. */
+    /* Quick, no -b, not already on LZMA:
+       - 8 vs 16 MB on a 16 MB prefix for text/CSV (existing).
+       - Non-CSV text larger than 32 MB uses 32 MB blocks directly (a 16 MB prefix cannot
+         tell 16 from 32, and a 32 MB prefix probe dropped the mix under 20 MB/s).
+       - LZP-32 is chosen from an 8 MB prefix (cheap) when it shrinks that prefix.
+       Skipped when the user passed -b (goldens use -b 2) or -P (LZP already chosen). */
+    if (tier == 2 && !bmb && !lzma_level && n > ((size_t)16 << 20) && (delim || is_texty(in, n))) {
+      if (!delim && n > ((size_t)32 << 20)) {
+        bs = (size_t)32 << 20; bmb = 32;
+      } else {
+        size_t pn = (size_t)16 << 20;
+        if (delim) { while (pn < n && in[pn] != '\n') pn++; if (pn < n) pn++; }
+        size_t s8 = measure_enc(in, pn, (size_t)8 << 20, tier, delim, zl, T, lzp_min);
+        size_t s16 = measure_enc(in, pn, (size_t)16 << 20, tier, delim, zl, T, lzp_min);
+        if (s16 != (size_t)-1 && s8 != (size_t)-1 && s16 < s8) { bs = (size_t)16 << 20; bmb = 16; }
+      }
+      if (lzp_min == 0) {
+        size_t pn8 = n < ((size_t)8 << 20) ? n : ((size_t)8 << 20);
+        if (delim) { while (pn8 < n && in[pn8] != '\n') pn8++; if (pn8 < n) pn8++; }
+        size_t z0 = measure_enc(in, pn8, pn8, tier, delim, zl, T, 0);
+        size_t z32 = measure_enc(in, pn8, pn8, tier, delim, zl, T, 32);
+        if (z32 != (size_t)-1 && z0 != (size_t)-1 && z32 < z0) lzp_min = 32;
+      }
     }
     size_t cap = n / (bs > 1 ? bs : 1) + 2, nb = 0, p = 0; blk_t *B = (blk_t *)calloc(cap + 1, sizeof(blk_t));
     while (p < n || nb == 0) {
       size_t e = p + bs < n ? p + bs : n;
       if (delim && e < n) { size_t q = e; while (q < n && in[q] != '\n') q++; e = q < n ? q + 1 : n; }
+      if (pagesz && e < n) { size_t al = e - (e % pagesz); if (al > p) e = al; }
       if (nb >= cap) { cap *= 2; B = (blk_t *)realloc(B, (cap + 1) * sizeof(blk_t)); memset(B + nb, 0, (cap + 1 - nb) * sizeof(blk_t)); }
       B[nb].raw = in + p; B[nb].rawlen = e - p; nb++; p = e; if (n == 0) break;
     }
-    cctx_t C = {B, tier, delim, zl, 1};
+    cctx_t C = {B, tier, delim, zl, 1, lzma_level, lzma_dict, pagesz, lzp_min};
     run_par(comp_block, &C, nb, T);
     buf o = {0}; uint8_t hd[20]; memcpy(hd, "QZE1", 4); hd[4] = 1; hd[5] = (uint8_t)tier; hd[6] = (uint8_t)delim; hd[7] = 0; w64(hd + 8, n); w32(hd + 16, (uint32_t)nb);
     put(&o, hd, 20);

@@ -37,7 +37,11 @@ def make_inputs():
     csv = ("\n".join(rows) + "\n").encode()
     txt = " ".join(words[next(r) % 24] + ("." if next(r) % 13 == 0 else "") for _ in range(300000)).encode()
     binb = bytes((next(r) % 7) * 31 % 256 if i % 4 else (i >> 6) & 255 for i in range(600000))
-    return {"table.csv": csv, "words.txt": txt, "struct.bin": binb}
+    # Fixed SQLite fixture so Quick's page-type grouping + LZMA (backend 3, transform 2) is in the
+    # portable stream check. Generated once (deterministic inserts); do not regenerate with a different
+    # libsqlite — the header embeds the library version.
+    sq = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "tiny.sqlite"), "rb").read()
+    return {"table.csv": csv, "words.txt": txt, "struct.bin": binb, "tiny.sqlite": sq}
 
 ENGINES = {   # name: (compress argv, decompress argv); {i} {o} {r} are file names inside the work dir
     "qze-fast":     ([os.path.join(N, "qze" + X), "c", "-1", "-T", "2", "-b", "1", "{i}", "{o}"], [os.path.join(N, "qze" + X), "d", "{o}", "{r}"]),

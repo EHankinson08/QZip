@@ -60,6 +60,7 @@ static/
 # everyday tiers (src/native/everyday) and cross / Windows builds
 src/native/qze
 src/native/everyday/qze
+src/native/everyday/qze-a64
 src/native/everyday/obj*/
 *.exe
 src/qzcore/qzc2
