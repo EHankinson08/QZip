@@ -366,6 +366,11 @@ def _bin(name):
         raise RuntimeError(f"qzcore binary {p} missing: run src/qzcore/build.sh")
     return [p]
 
+def _argv(name, *args):
+    """_bin(name) as a list plus args; a str or path prefix (e.g. a patched _bin) becomes a one-item list."""
+    b = _bin(name)
+    return ([os.fspath(b)] if isinstance(b, (str, bytes, os.PathLike)) else list(b)) + list(args)
+
 def _with_files(data, fn):
     d = tempfile.mkdtemp(prefix="qzr_")
     try:
@@ -461,13 +466,13 @@ def encode(codec, data, ram_mb=None):
         m = str(m)
         t = qzc2_threads(len(data))
         env = dict(os.environ, QZ_THREADS=str(t))
-        return _with_files(data, lambda i, o: _run(_bin("qzc2") + ["c", i, o, "-m", m] + extra, env))
+        return _with_files(data, lambda i, o: _run(_argv("qzc2", "c", i, o, "-m", m, *extra), env))
     if codec in ("qzb", "qzb_w0"):
-        return _with_files(data, lambda i, o: _run(_bin("qzb") + ["c", i, o, "1" if codec == "qzb" else "0"]))
+        return _with_files(data, lambda i, o: _run(_argv("qzb", "c", i, o, "1" if codec == "qzb" else "0")))
     if codec == "qzs":
-        return _with_files(data, lambda i, o: _run(_bin("qzs") + ["c", i, o], _env()))
+        return _with_files(data, lambda i, o: _run(_argv("qzs", "c", i, o), _env()))
     if codec == "qzm":
-        return _with_files(data, lambda i, o: _run(_bin("qzm") + ["c", i, o], _env()))
+        return _with_files(data, lambda i, o: _run(_argv("qzm", "c", i, o), _env()))
     raise ValueError(f"unknown codec {codec!r}; choose from {CODECS}")
 
 METHOD = {"qzmf": "qzmf", "qzc2": "qzc2", "qzc2_text": "qzc2", "qzc2_lean": "qzc2", "qzc2_text_lean": "qzc2", "qzs": "qzs", "qzm": "qzm", "qzb": "qzb", "qzb_w0": "qzb",
@@ -486,11 +491,11 @@ def decode(method, blob):
     if method == "qzmf":
         return qzmf_decode(blob)
     if method == "qzc2":
-        return _with_files(blob, lambda i, o: _run(_bin("qzc2") + ["d", i, o]))
+        return _with_files(blob, lambda i, o: _run(_argv("qzc2", "d", i, o)))
     if method == "qzb":
-        return _with_files(blob, lambda i, o: _run(_bin("qzb") + ["d", i, o]))
+        return _with_files(blob, lambda i, o: _run(_argv("qzb", "d", i, o)))
     if method in ("qzs", "qzm"):
-        return _with_files(blob, lambda i, o: _run(_bin(method) + ["d", i, o], _env()))
+        return _with_files(blob, lambda i, o: _run(_argv(method, "d", i, o), _env()))
     raise KeyError(method)
 
 def register(R):

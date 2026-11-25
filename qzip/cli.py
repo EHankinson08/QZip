@@ -52,7 +52,8 @@ def _mode(a):
         return {"quick": "quick", "classic": "classic", "deep": "deep",
                 "fast": "tier-fast", "balanced": "tier-balanced", "strong": "auto", "smart": "smart"}[tiers[0]]
     if getattr(a, "max", False):
-        if a.mode not in (DEFAULT_MODE, "auto-max"):
+        # "auto" / "classic" (the v1.0 default and its alias) still combine with --max: auto-max is Classic's max mode
+        if a.mode not in (DEFAULT_MODE, "auto", "classic", "auto-max"):
             sys.exit("qzip: --max is --mode auto-max; do not combine it with another --mode")
         return "auto-max"
     return a.mode

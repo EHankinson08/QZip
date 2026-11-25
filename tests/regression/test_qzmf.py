@@ -67,3 +67,12 @@ def test_qzmf_blob_has_no_paths():
     b = Q.encode("qzmf", _prose(3000))
     assert b.startswith(b"MCMARCHIVE") and b"/tmp" not in b and b"qzmf_" not in b
     assert Q.decode("qzmf", b) == _prose(3000)
+
+def test_cli_max_with_classic_modes():
+    """v1.1: Quick is the default; --max still combines with the old default 'auto' and its alias 'classic'."""
+    import argparse
+    from qzip import cli
+    for m in ("quick", "auto", "classic", "auto-max"):
+        assert cli._mode(argparse.Namespace(codec=None, max=True, mode=m, ram_mb=None, no_verify=False)) == "auto-max"
+    with pytest.raises(SystemExit):
+        cli._mode(argparse.Namespace(codec=None, max=True, mode="deep", ram_mb=None, no_verify=False))
