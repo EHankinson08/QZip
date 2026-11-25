@@ -3,9 +3,9 @@
   qzip compress <file> [-o out.qz] [--quick] [--classic] [--deep] [--fast] [--max]
                 [--mode quick|classic|deep|auto|auto-max|auto-fast|fast|max|ultra|legacy|hybrid|text]
                 [--codec NAME]
-        --quick (default)  Quick: everyday qze -2. Beats xz -9 / 7z -9 / brotli -11 on a 719 MB mix at ~50 MB/s
+        --quick (default)  Quick: everyday qze -2. Beats xz -9 / 7z -9 / brotli -11 on a 719 MB mix at ~17 MB/s (8 threads)
         --classic          Classic: the launch method (mcm fork router / x18 exceptions)
-        --deep             Deep: highest ratio (qze -3 for now; looped-transformer later)
+        --deep             Deep: max tier (qze -3 for now; a stronger engine is in development)
         auto               alias of --classic
         --max              = --mode auto-max: smallest output from QZip's own codecs (x18 = qzc2 CM, qzs CSV/log
                         transform, qzm NIfTI); about 3x slower than classic on text, often slower still on CSV
@@ -71,7 +71,7 @@ def _tier_args(p):
     g = p.add_argument_group("modes")
     g.add_argument("--quick", action="store_true", help="Quick (default): everyday qze -2, xz-class or better size at tens of MB/s")
     g.add_argument("--classic", action="store_true", help="Classic: the launch method (mcm-fork router / x18 exceptions)")
-    g.add_argument("--deep", action="store_true", help="Deep: highest ratio (qze -3 now; looped-transformer later)")
+    g.add_argument("--deep", action="store_true", help="Deep: max tier (qze -3 for now; a stronger engine is in development)")
     g.add_argument("--fast", action="store_true", help="fast tier: zstd-class speed, CSV column transform + zstd")
     g.add_argument("--balanced", action="store_true", help="same engine as --quick (qze -2)")
     g.add_argument("--strong", action="store_true", help="same engine as --classic (mcm fork + QZip models)")

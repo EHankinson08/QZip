@@ -1,7 +1,20 @@
 # Everyday QZip (Quick / Fast / Deep)
 
 Recommended go-to compressor: **`qzip compress`** or **`--quick`** (`qze -2`, the Quick default).
-Speed-first alternative: **`qzip compress --fast`** (`qze -1`). Classic: **`--classic`**. Deep: **`--deep`** (`qze -3` until the looped transformer lands).
+Speed-first alternative: **`qzip compress --fast`** (`qze -1`). Classic: **`--classic`**. Deep: **`--deep`** (`qze -3` for now; a stronger engine is in development).
+
+## v1.1 release numbers (supersede the older tables below)
+
+Official T=8 run, 25 Nov 2026 (`docs/everyday_pareto.jsonl`): Quick is **strictly smaller and strictly faster to
+compress than 7z -9, xz -9, brotli -11 and zstd -19 -T on all 14 files**. Mix: ratio **7.38**, **97.45 MB**,
+**17.5 MB/s** compress, **134.8 MB/s** decompress. Peak RAM **2.77 GB** on the CPython tarball, ≤ 0.6 GB on the
+other 13 files. New in v1.1: source tarballs (ustar, 8 MB–1 GB, not mostly `.pyc` or RISC executables) use
+**shared-window parallel LZMA** (backend 5): 8 fixed blocks, each a raw LZMA stream whose dictionary is preset to all
+earlier bytes; a tree match finder covers the last 2–12 MB and a content-defined 12-byte hash table reaches older
+bytes. Output does not depend on `-T`; these blocks decode sequentially after the others. CPython 19,965,372 B in
+11.9 s (7z -9 19,983,689 B in 31.8 s); samba 3,750,367 B in 1.9 s (7z -9 3,759,770 B in 3.4 s). The trade-off: the mix
+drops from 22.6 to 17.5 MB/s and CPython needs 2.77 GB (7z -9: 1.05 GB). Per-file table: [README](../README.md#quick-the-default-since-v11).
+The sections below are the development history (older numbers).
 
 Quick (`qze -2`) and Deep (`qze -3`) are the qze tiers: block-parallel zstd (fast) or libbsc BWT + static QLFC / zstd, with a CSV column transform when a delimiter is detected. Quick also routes SQLite through a page-type grouping transform plus LZMA, applies a field/column log transform (timestamps, IDs, syslog) and an NDJSON key dictionary, and uses LZMA (vendored LZMA SDK 26.06, public domain, Igor Pavlov, including x86/ARM64 branch converters) on small binaries, PDFs, tarballs, and logs where a sample says it wins. Solid lzma-9 is size-capped at 32 MB so the 719 MB mix stays ≥20 MB/s. Classic (`--classic`) is the launch mcm-fork router. Format is QZE1 (backend 3 = LZMA; transforms 2 = SQLite pages, 3 = log, 4 = JSON keys, 5 = BCJ; flags may mark a file-level log transform). Streams are identical across Linux x86-64, Linux arm64, and Windows x86-64 (same `T` and flags; block split can change with `-T` unless `-b` is pinned).
 

@@ -1,4 +1,4 @@
-<h1 align="center">QZip</h1>
+<h1 align="center">QZip — Quick Zip</h1>
 
 <p align="center">
   <b>Verified lossless compression that beats mcm on text and crushes xz and zstd on real-world CSVs.</b><br>
@@ -7,7 +7,7 @@
 
 <p align="center">
   <a href="https://github.com/EHankinson08/QZip/actions/workflows/ci.yml"><img src="https://github.com/EHankinson08/QZip/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/EHankinson08/QZip/releases/tag/v1.0.0"><img src="https://img.shields.io/github/v/release/EHankinson08/QZip?label=release" alt="Release v1.0.0"></a>
+  <a href="https://github.com/EHankinson08/QZip/releases/tag/v1.1.0"><img src="https://img.shields.io/github/v/release/EHankinson08/QZip?label=release" alt="Release v1.1.0"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--or--later-blue" alt="License: GPL-3.0-or-later"></a>
   <img src="https://img.shields.io/badge/platform-Linux%20x86--64%20(AVX2)-lightgrey" alt="Platform: Linux x86-64 with AVX2">
 </p>
@@ -22,6 +22,9 @@
 </p>
 
 <p align="center"><img src="docs/img/hero.png" width="90%" alt="Compressed size as a percentage of xz -9e: QZip is 27–70%, mcm 34–82%, zstd 105–108% on enwik8 and five public CSVs"></p>
+
+**New in v1.1: Quick is the default.** On a 719 MB everyday mix it is strictly smaller and strictly faster than
+7z -9, xz -9, brotli -11 and zstd -19 -T on all 14 files ([results](#quick-the-default-since-v11)).
 
 QZip is a context-mixing compressor with models built for tables and text. On public CSV datasets it writes files
 **20–26% smaller than mcm** and **1.65–3.8× smaller than xz -9e**, and on Wikipedia text it is **1.03–1.24% smaller
@@ -53,7 +56,7 @@ It ships as a CLI and a local web app, runs entirely on your machine, and never 
 ```bash
 git clone https://github.com/EHankinson08/QZip.git && cd QZip
 ./run_local.sh                       # first run: venv + native build (~1–2 min), then the web app on http://127.0.0.1:5000
-.venv/bin/qzip compress data.csv     # in a second terminal: writes data.csv.qz, verified
+.venv/bin/qzip compress data.csv     # in a second terminal: Quick (default) writes data.csv.qz, verified
 ```
 
 Get the file back with `.venv/bin/qzip decompress data.csv.qz -o restored.csv`, or drop the `.qz` on the web app.
@@ -76,7 +79,10 @@ Docker: `docker build -t qzip . && docker run --rm -p 127.0.0.1:5000:5000 qzip`
 ### CLI
 
 ```bash
-qzip compress   data.csv                     # -> data.csv.qz (default engine; -o to choose the name)
+qzip compress   data.csv                     # Quick (default) -> data.csv.qz (-o to choose the name)
+qzip compress   --classic data.csv           # Classic: the v1.0 engine (mcm-fork router / x18), smaller on text and CSVs, much slower
+qzip compress   --deep data.csv              # Deep: qze -3 for now (a bigger engine is in development)
+qzip compress   --fast data.csv              # zstd-class speed
 qzip compress   --max data.csv -o data.max.qz  # QZip's own x18 / qzs codecs: smallest on some files, 3x+ slower
 qzip decompress data.csv.qz -o out.csv       # sha256-checked; refuses to overwrite without -f
 qzip verify     data.csv.qz data.csv         # decodes and compares with the original
@@ -85,14 +91,69 @@ qzip bench      data.csv                     # QZip vs xz -9 / zstd -19 --long /
 qzip web                                     # local drag-and-drop web app
 ```
 
-Modes: `auto` (default, the router), `--max` / `auto-max` (QZip's own codecs only, sometimes smaller, 3–15× slower)
+Modes: `--quick` (default), `--classic` (also `auto`, the v1.0 router), `--deep`, `--fast`, `--max` / `auto-max` (QZip's own codecs only, sometimes smaller, 3–15× slower)
 and `auto-fast` (fast codecs only). Details in [docs/USAGE.md](docs/USAGE.md).
 
 ## Benchmarks
 
-Sizes in bytes, smaller is better. Every row is a byte-exact round trip; a `.qz` file adds a header of under 1 KB.
+### Quick (the default since v1.1)
 
-| file | **QZip** (default) | mcm 0.84 -x11 | xz -9e | zstd -19 --long | brotli -11 |
+Quick (`qzip compress`, engine `qze -2`) is built for everyday files: fast, parallel, and smaller than the usual
+archivers. On a 14-file, 719 MB mix of CSVs, logs, JSON, source tarballs, Wikipedia text, binaries, a SQLite database
+and a PDF, **Quick is strictly smaller AND strictly faster to compress than 7z -9, xz -9, brotli -11 and
+zstd -19 -T on all 14 files** (ties count as losses).
+
+<p align="center"><img src="docs/img/everyday_pareto.png" width="90%" alt="719 MB everyday mix: QZip Quick 97.45 MB in 41 s, 7z -9 110.2 MB, xz -9 110.4 MB, brotli -11 110.7 MB, zstd -19 -T 118.5 MB"></p>
+
+| 719 MB mix (14 files, 8 threads) | ratio | total size | compress | decompress | peak RAM |
+|---|---:|---:|---:|---:|---:|
+| **QZip Quick** | **7.38** | **97.45 MB** | **17.5 MB/s** | 134.8 MB/s | 2.77 GB (CPython tarball; ≤ 0.6 GB on the other 13 files) |
+| 7z -9 | 6.52 | 110.22 MB | 2.8 MB/s | 136.8 MB/s | 1.05 GB (CPython) |
+| xz -9 | 6.51 | 110.39 MB | 2.0 MB/s | 146.2 MB/s | |
+| brotli -11 | 6.49 | 110.70 MB | 0.6 MB/s | 380.5 MB/s | |
+| zstd -19 -T | 6.07 | 118.48 MB | 3.3 MB/s | 862.8 MB/s | |
+
+Per file (compressed bytes · compress wall time):
+
+| file | input | **Quick** | 7z -9 | xz -9 | brotli -11 | zstd -19 -T |
+|---|---:|---:|---:|---:|---:|---:|
+| youth.csv | 55.5 MB | **1,740,984 · 1.71 s** | 3,982,193 · 18.63 s | 3,979,928 · 23.55 s | 3,536,333 · 86.93 s | 3,723,296 · 17.50 s |
+| TRI_By_Name_1987_2014.csv | 68.4 MB | **6,040,734 · 2.83 s** | 7,573,058 · 29.07 s | 7,558,064 · 35.93 s | 7,336,137 · 106.13 s | 7,890,413 · 22.09 s |
+| Panel_2000_2022.csv | 58.2 MB | **10,756,456 · 2.43 s** | 12,998,566 · 38.29 s | 13,017,752 · 50.70 s | 13,077,822 · 134.30 s | 13,693,727 · 32.17 s |
+| ssh.log | 73.4 MB | **868,404 · 0.50 s** | 3,600,499 · 10.89 s | 3,619,968 · 17.88 s | 2,725,964 · 102.13 s | 2,999,081 · 21.78 s |
+| openstack.log | 40.5 MB | **1,966,506 · 0.57 s** | 2,530,845 · 5.93 s | 2,517,976 · 8.91 s | 2,323,046 · 58.93 s | 2,432,598 · 21.68 s |
+| healthapp.log | 23.5 MB | **1,248,636 · 1.21 s** | 1,494,358 · 4.47 s | 1,496,408 · 7.58 s | 1,311,594 · 35.97 s | 1,434,593 · 16.41 s |
+| gh_events.json | 67.1 MB | **4,012,606 · 1.34 s** | 4,203,827 · 11.91 s | 4,195,164 · 14.40 s | 4,053,913 · 60.39 s | 4,645,302 · 8.73 s |
+| cpython-3.12.7.tar | 105.7 MB | **19,965,372 · 11.89 s** | 19,983,689 · 31.75 s | 20,045,536 · 41.75 s | 20,279,823 · 149.16 s | 21,001,965 · 16.09 s |
+| mixed_pystdlib.tar | 26.6 MB | **5,360,713 · 4.84 s** | 5,383,198 · 5.96 s | 5,389,244 · 9.77 s | 5,487,571 · 44.38 s | 5,913,265 · 8.63 s |
+| enwik8 | 100.0 MB | **22,148,180 · 2.26 s** | 24,799,463 · 77.38 s | 24,865,244 · 114.96 s | 25,742,001 · 213.21 s | 26,944,227 · 22.26 s |
+| samba | 21.6 MB | **3,750,367 · 1.88 s** | 3,759,770 · 3.36 s | 3,763,616 · 6.65 s | 3,766,340 · 27.93 s | 3,894,675 · 7.64 s |
+| mozilla | 51.2 MB | **13,269,305 · 8.77 s** | 13,344,686 · 11.46 s | 13,374,160 · 22.57 s | 13,872,265 · 114.58 s | 15,071,672 · 11.92 s |
+| northwind.db | 24.7 MB | **5,297,382 · 0.70 s** | 5,534,760 · 4.30 s | 5,533,856 · 8.45 s | 6,162,304 · 74.93 s | 7,792,830 · 8.18 s |
+| paper.pdf | 2.2 MB | **1,029,021 · 0.12 s** | 1,034,004 · 0.14 s | 1,034,916 · 0.54 s | 1,029,145 · 2.77 s | 1,040,451 · 0.60 s |
+
+**Honest caveats**
+
+- **Some margins are thin.** CPython is 18,317 B (0.09%) smaller than 7z -9, samba 9,403 B (0.25%), and paper.pdf
+  124 B smaller than brotli -11 and 0.02 s faster than 7z -9.
+- **Source tarballs cost time and RAM.** Quick compresses big source tarballs as 8 parallel LZMA blocks that share one
+  long-range window. That is what beats 7z on CPython, but it takes 11.9 s and 2.77 GB of RAM on that file, and it
+  pulls the mix speed down from 22.6 MB/s (before this route, with 12/14 wins) to 17.5 MB/s.
+- **Decompression is not the fastest.** brotli and zstd decompress 3–6× faster than Quick on this mix.
+- **The rivals' numbers come from a few runs.** Fresh 7z -9 on every file, fresh zstd -19 -T on CPython and samba;
+  xz -9, brotli -11 and the other zstd rows come from the same machine earlier the same day.
+
+Method: Linux x86-64 VM, 8 threads (`-T 8` / `-mmt8` where the tool supports it), `nice 19` + `ionice -c3`, one job
+at a time, 24–25 Nov 2026 (America/Chicago). Every row is a sha256-verified round trip. Raw rows:
+[`docs/everyday_pareto.jsonl`](docs/everyday_pareto.jsonl); more in [docs/EVERYDAY.md](docs/EVERYDAY.md).
+
+### Classic (`--classic`, the v1.0 default)
+
+Classic is the v1.0 engine: QZip's table and text models on an mcm fork. It is much slower than Quick but smaller on
+text and CSVs. Sizes in bytes, smaller is better. Every row is a byte-exact round trip; a `.qz` file adds a header of
+under 1 KB.
+
+| file | **QZip Classic** | mcm 0.84 -x11 | xz -9e | zstd -19 --long | brotli -11 |
 |---|---:|---:|---:|---:|---:|
 | enwik8 (Wikipedia, 100 MB) | **17,361,988** | 17,543,256 | 24,831,648 | 26,504,540 | 25,742,001 |
 | enwik9 (Wikipedia, 1 GB) | **136,854,237** | 138,569,355 | – | – | – |
@@ -104,7 +165,7 @@ Sizes in bytes, smaller is better. Every row is a byte-exact round trip; a `.qz`
 
 **Speed and memory** (compress / decompress wall time, peak RAM):
 
-| file | **QZip** (default) | mcm 0.84 -x11 | QZip `--max` (x18) | xz -9e | zstd -19 --long |
+| file | **QZip Classic** | mcm 0.84 -x11 | QZip `--max` (x18) | xz -9e | zstd -19 --long |
 |---|---:|---:|---:|---:|---:|
 | enwik8 | 44.5 / 44.2 s · 6.1 GB | 40.5 / 40.3 s · 6.1 GB | 139–144 / 145–150 s · 9.9 GB | 169.7 / 2.1 s · 0.7 GB | 128.5 / 0.27 s · 0.2 GB |
 | enwik9 | 373.4 / 369.6 s · 6.2 GB | 336.0 / 333.0 s · 6.2 GB | 1,296.2 / 1,324.8 s · 12.0 GB | – | – |

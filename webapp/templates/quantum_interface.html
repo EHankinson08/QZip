@@ -129,7 +129,7 @@
                             title="Classic: the launch method (mcm-fork router, x18 on some files)."
                             class="mode-btn px-5 py-2 text-sm font-medium bg-white text-gray-700 border-l border-gray-300 hover:bg-gray-50">Classic</button>
                         <button type="button" data-mode-btn="deep" aria-pressed="false"
-                            title="Deep: highest ratio. Uses qze max for now; the looped-transformer path will land here later."
+                            title="Deep: max tier. Uses qze max for now; a stronger engine is in development."
                             class="mode-btn px-5 py-2 text-sm font-medium bg-white text-gray-700 border-l border-gray-300 hover:bg-gray-50">Deep</button>
                     </div>
                     <input type="hidden" id="compressionMethod" value="quick">
@@ -373,7 +373,7 @@
             const hints = {
                 quick: 'Quick: everyday default, verified, tens of MB/s.',
                 classic: 'Classic: the launch method (mcm-fork router / x18).',
-                deep: 'Deep: highest ratio (qze max for now).'
+                deep: 'Deep: max tier (qze max for now).'
             };
             function setMode(m){
                 if (!input) return;

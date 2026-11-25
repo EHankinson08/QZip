@@ -23,3 +23,12 @@ written clean-room (no code from paq/lpaq/mcm/cmix/zpaq) and are kept as-is.
 * GPL-2.0-or-later (lpaq1) is used under GPL-3.0 terms.
 * BSD-3-Clause (zstd) is included under GPL-3.0 with its license text kept next to the sources.
 * LZMA SDK 26.06 is public domain (Igor Pavlov) and is compatible with GPL-3.0. Additional SDK modules vendored for the PDF split (Lzma2Enc/Dec, MtCoder, MtDec, 7zStream, plus LzFindMt/LzFindOpt/Threads) are the same public-domain release.
+
+## Prebuilt `qze` release binaries (v1.1)
+The standalone `qze` binaries attached to the v1.1 release (Linux x86-64, Linux arm64, Windows x64) are built from
+`src/native/everyday/` and contain zstd 1.5.7 (BSD-3-Clause), libbsc 3.4.1 and libsais (Apache-2.0) and the
+LZMA SDK 26.06 (public domain, with the QZip encoder addition described in `src/native/everyday/lzma/README`),
+under QZip's GPL-3.0-or-later. The Linux builds are statically linked against glibc (LGPL-2.1-or-later) and
+libstdc++/libgcc (GPL-3.0 with the GCC Runtime Library Exception). The Windows build is statically linked against
+the MinGW-w64 runtime and winpthreads (MIT / ZPL-2.1 / public domain parts) and libstdc++/libgcc (GCC Runtime
+Library Exception). Corresponding source: the v1.1.0 tag of this repository.
