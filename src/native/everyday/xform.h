@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-enum { XF_LOG = 3, XF_JSON = 4, XF_BCJ = 5, XF_TAR = 6, XF_PDF = 7 };
+enum { XF_LOG = 3, XF_JSON = 4, XF_BCJ = 5, XF_TAR = 6, XF_PDF = 7, XF_TSP = 8, XF_SCAT = 9 };
 
 int looks_health(const uint8_t *s, size_t n);
 int looks_syslog(const uint8_t *s, size_t n);
@@ -12,6 +12,8 @@ int looks_ndjson(const uint8_t *s, size_t n);
 int looks_logcat(const uint8_t *s, size_t n);
 int xf_logcat_encode(const uint8_t *s, size_t n, uint8_t **out, size_t *on);
 int xf_logcat_decode(const uint8_t *t, size_t tn, uint8_t *dst, size_t want);
+int xf_lnum_encode(const uint8_t *s, size_t n, uint8_t **out, size_t *on);
+int xf_lnum_decode(const uint8_t *t, size_t tn, uint8_t *dst, size_t want);
 
 /* Encode writes a self-contained blob (magic + payload). 1 = ok, 0 = fail (leave *out untouched). */
 int xf_health_encode(const uint8_t *s, size_t n, uint8_t **out, size_t *on);
@@ -30,5 +32,10 @@ size_t xf_tar_risc_bytes(const uint8_t *s, size_t n);
 size_t xf_pdf_split_encode(const uint8_t *s, size_t n, uint8_t **out, size_t *on);
 int xf_pdf_split_decode(const uint8_t *t, size_t tn, uint8_t *dst, size_t want);
 int xf_tar_sort_decode(const uint8_t *t, size_t tn, uint8_t *dst, size_t want);
+int looks_starcat(const uint8_t *s, size_t n);
+int xf_starcat_encode(const uint8_t *s, size_t n, uint8_t **out, size_t *on, size_t cuts[7]);
+int xf_starcat_decode(const uint8_t *t, size_t tn, uint8_t *dst, size_t want);
+int xf_tar_split_encode(const uint8_t *s, size_t n, uint8_t **out, size_t *on);
+int xf_tar_split_decode(const uint8_t *t, size_t tn, uint8_t *dst, size_t want);
 
 #endif

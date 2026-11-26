@@ -8,7 +8,7 @@ typedef struct { uint8_t *b; size_t n, cap; } xbuf;
 static void xres(xbuf *x, size_t k) {
   if (x->n + k > x->cap) { x->cap = (x->n + k) * 2 + 4096; x->b = (uint8_t *)realloc(x->b, x->cap); }
 }
-static void xput(xbuf *x, const void *s, size_t k) { xres(x, k); memcpy(x->b + x->n, s, k); x->n += k; }
+static void xput(xbuf *x, const void *s, size_t k) { if (!k) return; xres(x, k); memcpy(x->b + x->n, s, k); x->n += k; }
 static void xpc(xbuf *x, int c) { xres(x, 1); x->b[x->n++] = (uint8_t)c; }
 static void xpv(xbuf *x, uint64_t v) {
   xres(x, 10);
@@ -516,6 +516,135 @@ int xf_logcat_decode(const uint8_t *t, size_t tn, uint8_t *dst, size_t want) {
   free(o.b); return bad;
 }
 
+/* -------- numeric-field delta (any line-oriented text): QZLOG1N + text
+   Every maximal run of 1..18 ASCII digits on a line is a slot. The line keeps its text; each slot becomes
+   [0x03 '0'+width] (0x01 delta | 0x02 -delta) with the delta in decimal (empty for 0). The base value is the
+   previous line's same slot when both lines agree on all text before it, else the same slot of the last line
+   with the identical skeleton (text with slots blanked), else 0. Width is implicit when it equals
+   max(digits(value), base width). Bytes 0x01..0x04 in the input are escaped as 0x04 b. */
+#define LN_MAXS 48
+#ifndef LN_TBITS
+#define LN_TBITS 15
+#endif
+typedef struct { uint64_t h; int ns; int64_t v[LN_MAXS]; uint8_t w[LN_MAXS]; } ln_ent;
+typedef struct {
+  ln_ent *tab;
+  uint8_t *psk; size_t pskn, pskcap; size_t pmp[LN_MAXS]; int pns; int64_t pv[LN_MAXS]; uint8_t pw[LN_MAXS];
+} ln_st;
+static uint64_t ln_hash(const uint8_t *s, size_t n) {
+  uint64_t h = 1469598103934665603ULL; for (size_t i = 0; i < n; i++) { h ^= s[i]; h *= 1099511628211ULL; }
+  return h ^ (h >> 29);
+}
+static int ln_init(ln_st *S) {
+  memset(S, 0, sizeof *S); S->tab = (ln_ent *)calloc((size_t)1 << LN_TBITS, sizeof(ln_ent)); return S->tab != NULL;
+}
+static void ln_free(ln_st *S) { free(S->tab); free(S->psk); }
+static int ln_ndig(int64_t v) { int k = 1; while (v >= 10) { v /= 10; k++; } return k; }
+/* base of slot j given current skeleton sk (marker positions mp, ns slots, hash entry e) */
+static int ln_base(const ln_st *S, const uint8_t *sk, const size_t *mp, int j, const ln_ent *e, int ns, int64_t *bv, int *bw) {
+  if (j < S->pns && S->pmp[j] == mp[j] && (mp[j] == 0 || !memcmp(S->psk, sk, mp[j]))) { *bv = S->pv[j]; *bw = S->pw[j]; return 1; }
+  if (e && e->ns == ns) { *bv = e->v[j]; *bw = e->w[j]; return 1; }
+  *bv = 0; *bw = 1; return 0;
+}
+static void ln_commit(ln_st *S, const uint8_t *sk, size_t skn, const size_t *mp, int ns, const int64_t *v, const uint8_t *w, uint64_t h) {
+  ln_ent *e = &S->tab[h & (((uint64_t)1 << LN_TBITS) - 1)];
+  e->h = h; e->ns = ns; memcpy(e->v, v, ns * sizeof(int64_t)); memcpy(e->w, w, ns);
+  if (skn > S->pskcap) { S->pskcap = skn * 2 + 256; S->psk = (uint8_t *)realloc(S->psk, S->pskcap); }
+  if (skn) memcpy(S->psk, sk, skn); S->pskn = skn; memcpy(S->pmp, mp, ns * sizeof(size_t)); S->pns = ns;
+  memcpy(S->pv, v, ns * sizeof(int64_t)); memcpy(S->pw, w, ns);
+}
+static void ln_dec(xbuf *o, uint64_t d) { char t[24]; int k = 0; do { t[k++] = (char)('0' + d % 10); d /= 10; } while (d); while (k) xpc(o, t[--k]); }
+int xf_lnum_encode(const uint8_t *s, size_t n, uint8_t **out, size_t *on) {
+  ln_st S; if (!ln_init(&S)) return 0;
+  xbuf o = {0}; xput(&o, "QZLOG1N", 7);
+  xbuf sk = {0}; size_t mp[LN_MAXS]; int64_t v[LN_MAXS]; uint8_t w[LN_MAXS]; size_t ss[LN_MAXS];
+  size_t i = 0;
+  while (i < n) {
+    size_t e = i; while (e < n && s[e] != '\n') e++;
+    /* pass 1: skeleton + slots */
+    sk.n = 0; int ns = 0;
+    for (size_t k = i; k < e;) {
+      if (is_digit(s[k])) {
+        size_t a = k; while (k < e && is_digit(s[k])) k++;
+        if (k - a <= 18 && ns < LN_MAXS) {
+          int64_t x = 0; for (size_t q = a; q < k; q++) x = x * 10 + (s[q] - '0');
+          mp[ns] = sk.n; v[ns] = x; w[ns] = (uint8_t)(k - a); ss[ns] = a; ns++; xpc(&sk, 1);
+        } else xput(&sk, s + a, k - a);
+      } else xpc(&sk, s[k++]);
+    }
+    uint64_t h = ln_hash(sk.b, sk.n);
+    ln_ent *en = &S.tab[h & (((uint64_t)1 << LN_TBITS) - 1)]; if (en->h != h) en = NULL;
+    /* pass 2: emit */
+    int j = 0;
+    for (size_t k = i; k < e;) {
+      if (j < ns && k == ss[j]) {
+        int64_t bv; int bw; ln_base(&S, sk.b, mp, j, en, ns, &bv, &bw);
+        int E = ln_ndig(v[j]); if (bw > E) E = bw;
+        if (w[j] != E) { xpc(&o, 3); xpc(&o, '0' + w[j]); }
+        int64_t d = v[j] - bv;
+        if (d >= 0) { xpc(&o, 1); if (d) ln_dec(&o, (uint64_t)d); } else { xpc(&o, 2); ln_dec(&o, (uint64_t)(-d)); }
+        k += w[j]; j++;
+      } else {
+        uint8_t c = s[k++];
+        if (c >= 1 && c <= 4) xpc(&o, 4);
+        xpc(&o, c);
+      }
+    }
+    ln_commit(&S, sk.b, sk.n, mp, ns, v, w, h);
+    if (e < n) xpc(&o, '\n');
+    i = e + 1;
+  }
+  free(sk.b); ln_free(&S);
+  *out = o.b; *on = o.n; return 1;
+}
+int xf_lnum_decode(const uint8_t *t, size_t tn, uint8_t *dst, size_t want) {
+  if (tn < 7 || memcmp(t, "QZLOG1N", 7)) return 1;
+  ln_st S; if (!ln_init(&S)) return 1;
+  xbuf o = {0}; xbuf sk = {0}; size_t mp[LN_MAXS]; int64_t v[LN_MAXS]; uint8_t w[LN_MAXS]; int bad = 0;
+  size_t i = 7;
+  while (i < tn && !bad) {
+    size_t e = i; while (e < tn && t[e] != '\n') e++;
+    /* pass 1: skeleton */
+    sk.n = 0; int ns = 0;
+    for (size_t k = i; k < e && !bad;) {
+      uint8_t c = t[k];
+      if (c == 4) { if (k + 1 >= e) { bad = 1; break; } xpc(&sk, t[k + 1]); k += 2; }
+      else if (c == 3 || c == 1 || c == 2) {
+        if (c == 3) { k += 2; if (k >= e || (t[k] != 1 && t[k] != 2)) { bad = 1; break; } }
+        k++; while (k < e && is_digit(t[k])) k++;
+        if (ns >= LN_MAXS) { bad = 1; break; }
+        mp[ns++] = sk.n; xpc(&sk, 1);
+      } else { xpc(&sk, c); k++; }
+    }
+    if (bad) break;
+    uint64_t h = ln_hash(sk.b, sk.n);
+    ln_ent *en = &S.tab[h & (((uint64_t)1 << LN_TBITS) - 1)]; if (en->h != h) en = NULL;
+    int j = 0;
+    for (size_t k = i; k < e && !bad;) {
+      uint8_t c = t[k];
+      if (c == 4) { xpc(&o, t[k + 1]); k += 2; }
+      else if (c == 3 || c == 1 || c == 2) {
+        int wx = 0; if (c == 3) { wx = t[k + 1] - '0'; k += 2; c = t[k]; }
+        k++; uint64_t d = 0; int nd = 0; while (k < e && is_digit(t[k])) { if (++nd > 19) { bad = 1; break; } d = d * 10 + (uint64_t)(t[k] - '0'); k++; }
+        if (bad) break;
+        int64_t bv; int bw; ln_base(&S, sk.b, mp, j, en, ns, &bv, &bw);
+        int64_t x = c == 1 ? bv + (int64_t)d : bv - (int64_t)d;
+        if (x < 0 || x > 999999999999999999LL) { bad = 1; break; }
+        int E = ln_ndig(x); if (bw > E) E = bw; int ww = wx ? wx : E;
+        if (ww < ln_ndig(x) || ww > 18) { bad = 1; break; }
+        char tmp[24]; int64_t y = x; for (int q = ww - 1; q >= 0; q--) { tmp[q] = (char)('0' + y % 10); y /= 10; }
+        xput(&o, tmp, ww); v[j] = x; w[j] = (uint8_t)ww; j++;
+      } else { xpc(&o, c); k++; }
+    }
+    if (bad) break;
+    ln_commit(&S, sk.b, sk.n, mp, ns, v, w, h);
+    if (e < tn) xpc(&o, '\n');
+    i = e + 1;
+  }
+  if (!bad && o.n == want) memcpy(dst, o.b, want); else bad = 1;
+  free(o.b); free(sk.b); ln_free(&S); return bad;
+}
+
 int xf_log_encode(const uint8_t *s, size_t n, uint8_t **out, size_t *on) {
   if (looks_health(s, n)) return xf_health_encode(s, n, out, on);
   if (looks_syslog(s, n)) return xf_syslog_encode(s, n, out, on);
@@ -525,6 +654,7 @@ int xf_log_decode(const uint8_t *t, size_t tn, uint8_t *dst, size_t want) {
   if (tn >= 7 && !memcmp(t, "QZLOG1H", 7)) return xf_health_decode(t, tn, dst, want);
   if (tn >= 7 && !memcmp(t, "QZLOG1S", 7)) return xf_syslog_decode(t, tn, dst, want);
   if (tn >= 7 && !memcmp(t, "QZLOG1A", 7)) return xf_logcat_decode(t, tn, dst, want);
+  if (tn >= 7 && !memcmp(t, "QZLOG1N", 7)) return xf_lnum_decode(t, tn, dst, want);
   return 1;
 }
 
@@ -814,6 +944,152 @@ static int tu_cmp(const void *a, const void *b) {
   if (x->off > y->off) return 1;
   return 0;
 }
+/* -------- tar header / data split: QZTSP1 u32 nh u32 hl  headers(hl)  data  trailer
+   Headers are 512-byte records, stored field by field across all members (names/links/owners/prefix trimmed of
+   trailing NULs and ended by '\n'; checksums dropped when they are the standard "%06o\0 " of the record, else
+   kept in a side list). Data is each member's bytes without the zero padding. The first all-zero record and
+   everything after it is the trailer. Any header whose size is not plain octal, padding that is not zero, or a
+   field that cannot be trimmed back exactly makes the encoder decline (it is also checked by decoding). */
+static const int TSP_F[15][2] = {{0,100},{100,8},{108,8},{116,8},{124,12},{136,12},{156,1},{157,100},{257,8},{265,32},{297,32},{329,8},{337,8},{345,155},{500,12}};
+static int tsp_size(const uint8_t *h, size_t *v) {
+  size_t r = 0; int i = 0, any = 0;
+  while (i < 12 && h[124 + i] == ' ') i++;
+  for (; i < 12 && h[124 + i] >= '0' && h[124 + i] <= '7'; i++) { r = r * 8 + (size_t)(h[124 + i] - '0'); any = 1; if (r > ((size_t)1 << 40)) return 0; }
+  for (; i < 12; i++) if (h[124 + i] != 0 && h[124 + i] != ' ') return 0;
+  *v = r; return any || h[124] == 0;
+}
+static void tsp_chk(const uint8_t *h, uint8_t c[8]) {
+  unsigned s = 0; for (int i = 0; i < 512; i++) s += (i >= 148 && i < 156) ? ' ' : h[i];
+  for (int i = 5; i >= 0; i--) { c[i] = (uint8_t)('0' + (s & 7)); s >>= 3; }
+  c[6] = 0; c[7] = ' ';
+}
+int xf_tar_split_encode(const uint8_t *s, size_t n, uint8_t **out, size_t *on) {
+  if (n < 1024 || memcmp(s + 257, "ustar", 5)) return 0;
+  size_t p = 0, nh = 0, cap = 1024; size_t *ho = (size_t *)malloc(cap * sizeof(size_t));
+  xbuf dat = {0};
+  for (;;) {
+    if (p + 512 > n) { free(ho); free(dat.b); return 0; }
+    int z = 1; for (int i = 0; i < 512; i++) if (s[p + i]) { z = 0; break; }
+    if (z) break;
+    size_t sz; if (!tsp_size(s + p, &sz)) { free(ho); free(dat.b); return 0; }
+    size_t rec = ((sz + 511) / 512) * 512;
+    if (p + 512 + rec > n) { free(ho); free(dat.b); return 0; }
+    for (size_t i = sz; i < rec; i++) if (s[p + 512 + i]) { free(ho); free(dat.b); return 0; }
+    if (nh == cap) { cap *= 2; ho = (size_t *)realloc(ho, cap * sizeof(size_t)); }
+    ho[nh++] = p; xput(&dat, s + p + 512, sz); p += 512 + rec;
+  }
+  if (nh < 2) { free(ho); free(dat.b); return 0; }
+  xbuf hs = {0};
+  for (int f = 0; f < 15; f++) {
+    int a = TSP_F[f][0], l = TSP_F[f][1];
+    for (size_t k = 0; k < nh; k++) {
+      const uint8_t *h = s + ho[k] + a;
+      if (l >= 32) { int e = l; while (e > 0 && h[e - 1] == 0) e--; for (int i = 0; i < e; i++) if (h[i] == '\n') { free(ho); free(dat.b); free(hs.b); return 0; } xput(&hs, h, e); xpc(&hs, '\n'); }
+      else xput(&hs, h, l);
+    }
+  }
+  for (size_t k = 0; k < nh; k++) { uint8_t c[8]; tsp_chk(s + ho[k], c); xpc(&hs, memcmp(c, s + ho[k] + 148, 8) ? 1 : 0); }
+  for (size_t k = 0; k < nh; k++) { uint8_t c[8]; tsp_chk(s + ho[k], c); if (memcmp(c, s + ho[k] + 148, 8)) xput(&hs, s + ho[k] + 148, 8); }
+  xbuf o = {0}; uint8_t b4[4];
+  xput(&o, "QZTSP1", 6); w32le(b4, (uint32_t)nh); xput(&o, b4, 4); w32le(b4, (uint32_t)hs.n); xput(&o, b4, 4);
+  xput(&o, hs.b, hs.n); xput(&o, dat.b, dat.n); xput(&o, s + p, n - p);
+  free(ho); free(dat.b); free(hs.b);
+  *out = o.b; *on = o.n; return 1;
+}
+int xf_tar_split_decode(const uint8_t *t, size_t tn, uint8_t *dst, size_t want) {
+  if (tn < 14 || memcmp(t, "QZTSP1", 6)) return 1;
+  size_t nh = r32le(t + 6), hl = r32le(t + 10);
+  if (14 + hl > tn || nh == 0 || nh > want / 512) return 1;
+  const uint8_t *hs = t + 14; size_t q = 0;
+  uint8_t *H = (uint8_t *)calloc(nh, 512); if (!H) return 1;
+  int bad = 0;
+  for (int f = 0; f < 15 && !bad; f++) {
+    int a = TSP_F[f][0], l = TSP_F[f][1];
+    for (size_t k = 0; k < nh && !bad; k++) {
+      uint8_t *h = H + k * 512 + a;
+      if (l >= 32) { size_t e = q; while (e < hl && hs[e] != '\n') e++; if (e >= hl || e - q > (size_t)l) { bad = 1; break; } memcpy(h, hs + q, e - q); q = e + 1; }
+      else { if (q + l > hl) { bad = 1; break; } memcpy(h, hs + q, l); q += l; }
+    }
+  }
+  const uint8_t *fl = hs + q; size_t qx = q + nh;
+  if (!bad && qx > hl) bad = 1;
+  for (size_t k = 0; k < nh && !bad; k++) {
+    uint8_t *h = H + k * 512;
+    if (fl[k]) { if (qx + 8 > hl) { bad = 1; break; } memcpy(h + 148, hs + qx, 8); qx += 8; }
+    else tsp_chk(h, h + 148);
+  }
+  if (!bad && qx != hl) bad = 1;
+  size_t dp = 14 + hl, op = 0;
+  for (size_t k = 0; k < nh && !bad; k++) {
+    const uint8_t *h = H + k * 512; size_t sz;
+    if (!tsp_size(h, &sz)) { bad = 1; break; }
+    size_t rec = ((sz + 511) / 512) * 512;
+    if (op + 512 + rec > want || dp + sz > tn) { bad = 1; break; }
+    memcpy(dst + op, h, 512); memcpy(dst + op + 512, t + dp, sz); memset(dst + op + 512 + sz, 0, rec - sz);
+    op += 512 + rec; dp += sz;
+  }
+  if (!bad && op + (tn - dp) == want) memcpy(dst + op, t + dp, tn - dp); else bad = 1;
+  free(H); return bad;
+}
+
+/* -------- binary star catalog (WCSTools / TDC binary format, e.g. SAO): QZSCT1 header(28) streams trailer
+   Header: 7 little-endian int32 (star0, star1, starn, stnum, mprop, nmag, nbent). Handled layout: stnum 0, entry =
+   RA f64, Dec f64, spectral type 2 B, nmag int16 magnitudes, then (mprop 1) two f32 proper motions, nbent bytes.
+   Streams (each its own block): RA as big-endian differences of the f64 bit patterns; Dec as 8 byte planes
+   (most significant first); spectral types; magnitudes; RA motions; Dec motions. Anything else declines. */
+static int scat_layout(const uint8_t *s, size_t n, size_t *R, int *nmag, int *mprop) {
+  if (n < 28 + 64) return 0;
+  int32_t h[7]; for (int i = 0; i < 7; i++) h[i] = (int32_t)r32le(s + 4 * i);
+  int64_t starn = h[2] < 0 ? -(int64_t)h[2] : h[2];
+  if (h[3] != 0 || (h[4] != 0 && h[4] != 1) || h[5] < 1 || h[5] > 10) return 0;
+  if (h[6] != 18 + 2 * h[5] + 8 * h[4]) return 0;
+  if (starn < 2 || 28 + (uint64_t)starn * (uint64_t)h[6] > n || n - (28 + (size_t)starn * (size_t)h[6]) > 4096) return 0;
+  *R = (size_t)starn; *nmag = h[5]; *mprop = h[4]; return 1;
+}
+int looks_starcat(const uint8_t *s, size_t n) { size_t R; int a, b; return scat_layout(s, n, &R, &a, &b); }
+static uint64_t rd64le(const uint8_t *p) { uint64_t v = 0; for (int i = 7; i >= 0; i--) v = (v << 8) | p[i]; return v; }
+static void wr64le(uint8_t *p, uint64_t v) { for (int i = 0; i < 8; i++) { p[i] = (uint8_t)v; v >>= 8; } }
+/* cuts[0..5] = payload offsets where the streams start (cuts[6] = trailer start) */
+int xf_starcat_encode(const uint8_t *s, size_t n, uint8_t **out, size_t *on, size_t cuts[7]) {
+  size_t R; int nmag, mprop; if (!scat_layout(s, n, &R, &nmag, &mprop)) return 0;
+  size_t E = 18 + 2 * (size_t)nmag + 8 * (size_t)mprop, tot = 34 + R * E + (n - 28 - R * E);
+  uint8_t *o = (uint8_t *)malloc(tot); if (!o) return 0;
+  memcpy(o, "QZSCT1", 6); memcpy(o + 6, s, 28);
+  const uint8_t *b = s + 28; size_t p = 34; uint64_t prev = 0;
+  cuts[0] = p;
+  for (size_t i = 0; i < R; i++) { uint64_t v = rd64le(b + i * E); uint64_t d = v - prev; prev = v; for (int k = 0; k < 8; k++) o[p++] = (uint8_t)(d >> (56 - 8 * k)); }
+  cuts[1] = p;
+  for (int k = 7; k >= 0; k--) for (size_t i = 0; i < R; i++) o[p++] = b[i * E + 8 + k];
+  cuts[2] = p;
+  for (size_t i = 0; i < R; i++) { o[p++] = b[i * E + 16]; o[p++] = b[i * E + 17]; }
+  cuts[3] = p;
+  for (size_t i = 0; i < R; i++) { memcpy(o + p, b + i * E + 18, 2 * (size_t)nmag); p += 2 * (size_t)nmag; }
+  cuts[4] = p;
+  if (mprop) for (size_t i = 0; i < R; i++) { memcpy(o + p, b + i * E + 18 + 2 * nmag, 4); p += 4; }
+  cuts[5] = p;
+  if (mprop) for (size_t i = 0; i < R; i++) { memcpy(o + p, b + i * E + 22 + 2 * nmag, 4); p += 4; }
+  cuts[6] = p;
+  memcpy(o + p, s + 28 + R * E, n - 28 - R * E); p += n - 28 - R * E;
+  *out = o; *on = p; return 1;
+}
+int xf_starcat_decode(const uint8_t *t, size_t tn, uint8_t *dst, size_t want) {
+  if (tn < 34 || memcmp(t, "QZSCT1", 6) || want < 28) return 1;
+  size_t R; int nmag, mprop;
+  if (!scat_layout(t + 6, want, &R, &nmag, &mprop)) return 1;
+  size_t E = 18 + 2 * (size_t)nmag + 8 * (size_t)mprop;
+  if (tn != 34 + want - 28) return 1;
+  memcpy(dst, t + 6, 28);
+  uint8_t *b = dst + 28; const uint8_t *p = t + 34; uint64_t prev = 0;
+  for (size_t i = 0; i < R; i++) { uint64_t d = 0; for (int k = 0; k < 8; k++) d = (d << 8) | *p++; prev += d; wr64le(b + i * E, prev); }
+  for (int k = 7; k >= 0; k--) for (size_t i = 0; i < R; i++) b[i * E + 8 + k] = *p++;
+  for (size_t i = 0; i < R; i++) { b[i * E + 16] = *p++; b[i * E + 17] = *p++; }
+  for (size_t i = 0; i < R; i++) { memcpy(b + i * E + 18, p, 2 * (size_t)nmag); p += 2 * (size_t)nmag; }
+  if (mprop) for (size_t i = 0; i < R; i++) { memcpy(b + i * E + 18 + 2 * nmag, p, 4); p += 4; }
+  if (mprop) for (size_t i = 0; i < R; i++) { memcpy(b + i * E + 22 + 2 * nmag, p, 4); p += 4; }
+  memcpy(dst + 28 + R * E, p, want - 28 - R * E);
+  return 0;
+}
+
 int xf_tar_sort_encode(const uint8_t *s, size_t n, uint8_t **out, size_t *on) {
   tu_t *M; int nm; size_t trail;
   if (!tu_parse(s, n, &M, &nm, &trail) || nm < 2) { free(M); return 0; }
