@@ -31,4 +31,4 @@ LZMA SDK 26.06 (public domain, with the QZip encoder addition described in `src/
 under QZip's GPL-3.0-or-later. The Linux builds are statically linked against glibc (LGPL-2.1-or-later) and
 libstdc++/libgcc (GPL-3.0 with the GCC Runtime Library Exception). The Windows build is statically linked against
 the MinGW-w64 runtime and winpthreads (MIT / ZPL-2.1 / public domain parts) and libstdc++/libgcc (GCC Runtime
-Library Exception). Corresponding source: the v1.1.0 tag of this repository.
+Library Exception). Corresponding source: the v1.2.0 tag of this repository.

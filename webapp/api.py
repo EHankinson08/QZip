@@ -21,7 +21,7 @@ from src.safe_compress import safe_compress, safe_decompress, MODES, DEFAULT_MOD
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="QZip local API", description="Verified lossless compression", version="1.1.0",
+app = FastAPI(title="QZip local API", description="Verified lossless compression", version="1.2.0",
               docs_url="/docs", redoc_url="/redoc")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
@@ -64,7 +64,7 @@ class DecompressionResponse(BaseModel):
 # API Endpoints
 @app.get("/")
 async def root():
-    return {"message": "QZip local API", "version": "1.1.0", "status": "operational",
+    return {"message": "QZip local API", "version": "1.2.0", "status": "operational",
             "default_mode": DEFAULT_MODE, "modes": sorted(MODES)}
 
 @app.get("/health")
