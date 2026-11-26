@@ -23,8 +23,10 @@
 
 <p align="center"><img src="docs/img/hero.png" width="90%" alt="Compressed size as a percentage of xz -9e: QZip is 27–70%, mcm 34–82%, zstd 105–108% on enwik8 and five public CSVs"></p>
 
-**New in v1.1: Quick is the default.** On a 719 MB everyday mix it is strictly smaller and strictly faster than
-7z -9, xz -9, brotli -11 and zstd -19 -T on all 14 files ([results](#quick-the-default-since-v11)).
+**New in v1.2: Quick is smallest on all 24 Silesia and Loghub files, and at least as fast to
+compress as 7-Zip on every one of them** ([results](#silesia-and-loghub-v12)). Quick has been the
+default since v1.1; the 14-file everyday mix from that release still holds
+([results](#quick-the-default-since-v11)).
 
 QZip is a context-mixing compressor with models built for tables and text. On public CSV datasets it writes files
 **20–26% smaller than mcm** and **1.65–3.8× smaller than xz -9e**, and on Wikipedia text it is **1.03–1.24% smaller
@@ -142,10 +144,84 @@ Per file (compressed bytes · compress wall time):
 - **Decompression is not the fastest.** brotli and zstd decompress 3–6× faster than Quick on this mix.
 - **The rivals' numbers come from a few runs.** Fresh 7z -9 on every file, fresh zstd -19 -T on CPython and samba;
   xz -9, brotli -11 and the other zstd rows come from the same machine earlier the same day.
+- **Three files in this mix shrink further in v1.2.** On the Silesia/Loghub machine below, Quick writes samba at
+  3,726,819 B (was 3,750,367), HealthApp.log at 412,746 B (was 1,248,636) and SSH.log at 825,932 B (was 868,404).
+  The 14-file totals and times in the table above are still the v1.1 VM measurements.
 
 Method: Linux x86-64 VM, 8 threads (`-T 8` / `-mmt8` where the tool supports it), `nice 19` + `ionice -c3`, one job
 at a time, 24–25 Nov 2026 (America/Chicago). Every row is a sha256-verified round trip. Raw rows:
 [`docs/everyday_pareto.jsonl`](docs/everyday_pareto.jsonl); more in [docs/EVERYDAY.md](docs/EVERYDAY.md).
+
+### Silesia and Loghub (v1.2)
+
+This is a separate test from the 14-file mix above. Silesia is the official 12-file compression
+corpus (Dickens, Webster's dictionary, Mozilla binaries, XML, medical images, source trees). The
+logs are ten public system logs from Loghub, leaving out the multi-gigabyte sets. We also packed
+each corpus into one tar (`silesia.tar`, `loghub.tar`). Rivals are the strong settings: `7z -mx9`,
+`xz -9e`, `brotli -q 11` and `zstd -19 --long`.
+
+**Quick is smallest on all 24 inputs, and at least as fast to compress as 7-Zip on every one.**
+Every encode–decode job was sha256-exact, in two confirming runs.
+
+| group | input | **Quick** | xz -9e | 7z -mx9 | brotli -q11 | zstd -19 --long |
+|---|---:|---:|---:|---:|---:|---:|
+| Silesia, 12 files | 211.9 MB | **42,679,123 B** | 48,456,100 | 48,758,631 | 49,564,563 | 52,817,908 |
+| silesia.tar | 212.0 MB | **42,678,988 B · 11.75 s** | 48,419,296 | 48,688,397 · 33.91 s | 49,663,969 | 52,769,442 |
+| Loghub, 10 files | 409.5 MB | **7,376,662 B** | 14,443,644 | 18,814,479 | 15,936,940 | 16,943,600 |
+| loghub.tar | 409.5 MB | **7,640,965 B · 9.27 s** | 14,455,700 | 18,818,249 · 34.00 s | 15,945,279 | 16,941,371 |
+
+The 12 Silesia files together are 11.9% smaller than xz -9e. The combined `silesia.tar` is also
+11.9% smaller than xz, because Quick now reads a tar one member at a time. The ten Loghub files
+together are 48.9% smaller than xz; `loghub.tar` is 47.1% smaller. Closest compress-time race is
+ooffice at 0.41 s vs 7-Zip's 0.45 s. Apache.log is 0.10 s vs 7-Zip's 0.24 s.
+
+Per file (compressed bytes · compress wall time). Bold is Quick. The last column is the best rival
+and the margin.
+
+| file | input | **Quick** | 7z -mx9 | xz -9e | brotli -q11 | zstd -19 --long | vs best rival |
+|---|---:|---:|---:|---:|---:|---:|---|
+| dickens | 10.2 MB | **2,442,450 · 0.69 s** | 2,831,111 | 2,831,220 | 2,827,777 | 2,849,702 | 385,327 B vs brotli |
+| mozilla | 51.2 MB | **13,269,305 · 5.33 s** | 13,344,686 | 13,376,248 | 13,872,265 | 15,040,430 | 75,381 B vs 7z |
+| mr | 10.0 MB | **2,308,616 · 0.46 s** | 2,748,257 | 2,751,900 | 2,823,136 | 3,112,784 | 439,641 B vs 7z |
+| nci | 33.6 MB | **1,081,916 · 0.80 s** | 1,741,410 | 1,449,280 | 1,519,768 | 1,642,482 | 367,364 B vs xz |
+| ooffice | 6.2 MB | **2,081,546 · 0.41 s** | 2,425,568 | 2,427,232 | 2,478,855 | 2,598,855 | 344,022 B vs 7z |
+| osdb | 10.1 MB | **2,459,938 · 0.46 s** | 2,851,796 | 2,844,564 | 2,816,278 | 3,098,465 | 356,340 B vs brotli |
+| reymont | 6.6 MB | **1,075,114 · 0.20 s** | 1,318,394 | 1,315,600 | 1,332,158 | 1,347,617 | 240,486 B vs xz |
+| samba | 21.6 MB | **3,726,819 · 1.55 s** | 3,759,770 | 3,739,532 | 3,766,340 | 3,892,544 | 12,713 B vs xz |
+| sao | 7.3 MB | **3,307,699 · 0.21 s** | 4,413,926 | 4,425,672 | 4,586,092 | 5,000,515 | 1,106,227 B vs 7z |
+| webster | 41.5 MB | **6,649,754 · 1.24 s** | 8,388,839 | 8,368,680 | 8,428,575 | 8,624,081 | 1,718,926 B vs xz |
+| xml | 5.3 MB | **389,092 · 0.15 s** | 455,003 | 434,900 | 430,566 | 454,681 | 41,474 B vs brotli |
+| x-ray | 8.5 MB | **3,886,874 · 0.32 s** | 4,479,871 | 4,491,272 | 4,682,753 | 5,155,752 | 592,997 B vs 7z |
+| silesia.tar | 212.0 MB | **42,678,988 · 11.75 s** | 48,688,397 · 33.91 s | 48,419,296 | 49,663,969 | 52,769,442 | 5,740,308 B vs xz |
+| Android_v1.log | 192.3 MB | **4,074,408 · 3.50 s** | 9,285,435 | 7,093,900 | 7,764,761 | 7,997,164 | 3,019,492 B vs xz |
+| Apache.log | 5.1 MB | **103,790 · 0.10 s** | 181,050 · 0.24 s | 157,268 | 166,650 | 178,061 | 53,478 B vs xz |
+| HPC.log | 33.6 MB | **818,606 · 0.66 s** | 1,684,891 | 1,652,008 | 1,843,434 | 2,069,611 | 833,402 B vs xz |
+| Hadoop.tar | 49.4 MB | **566,906 · 1.20 s** | 1,289,123 | 975,872 | 1,054,761 | 1,130,438 | 408,966 B vs xz |
+| HealthApp.log | 23.5 MB | **412,746 · 0.42 s** | 1,494,358 | 1,238,780 | 1,311,594 | 1,441,441 | 826,034 B vs xz |
+| Linux.log | 2.3 MB | **79,550 · 0.06 s** | 116,522 | 104,040 | 112,126 | 120,506 | 24,490 B vs xz |
+| Mac.log | 16.9 MB | **324,160 · 0.35 s** | 689,963 | 565,520 | 596,976 | 628,175 | 241,360 B vs xz |
+| Proxifier.log | 2.5 MB | **85,942 · 0.06 s** | 120,724 | 112,156 | 114,744 | 121,190 | 26,214 B vs xz |
+| SSH.log | 73.4 MB | **825,932 · 1.97 s** | 3,600,499 | 2,334,756 | 2,725,964 | 2,989,578 | 1,508,824 B vs xz |
+| Zookeeper.log | 10.4 MB | **84,622 · 0.19 s** | 351,914 | 209,344 | 245,930 | 267,436 | 124,722 B vs xz |
+| loghub.tar | 409.5 MB | **7,640,965 · 9.27 s** | 18,818,249 · 34.00 s | 14,455,700 | 15,945,279 | 16,941,371 | 6,814,735 B vs xz |
+
+**Honest caveats**
+
+- **sao uses a format-aware transform.** Binary star-catalog files (WCSTools/TDC layout) are split
+  into per-field streams. That is the same idea as PNG filters, FLAC, or 7-Zip's executable BCJ
+  filter, and it is the reason sao is 1.11 MB under 7-Zip.
+- **Decompression is not the fastest.** zstd and brotli still decode more quickly. On `loghub.tar`,
+  Quick takes 2.2 s to decompress, up from 0.8 s in v1.1.0, and slower than 7-Zip (0.6 s) and xz
+  (0.4 s) on that file. `silesia.tar` decompresses in 0.85 s.
+- **v1.1.0 cannot read every v1.2.0 file.** v1.2.0 reads all v1.1.0 files. New archive, log, and
+  star-catalog streams need a v1.2.0 decoder.
+
+Method: Intel Core i9-14900KF, 8 cores (`qze c -2 -T 8` / `-mmt8` / `-T8` where the tool supports
+it), `nice 19` + `ionice -c3`, 26 Nov 2026 (America/Denver). Quick sizes and wall times are from
+two confirming runs of the v1.2.0 engine; rival sizes are from the same machine (they do not
+depend on the QZip build); 7-Zip times in the table are from a same-day timing pass on that
+machine. Every row is a sha256-verified round trip.
+
 
 ### Classic (`--classic`, the v1.0 default)
 
@@ -288,6 +364,12 @@ RAM), to about 3 GB or 1.5 GB on smaller machines at some cost in size. x18 unde
 Best on CSV/TSV and other tables, logs and text. Any file round-trips. NIfTI medical volumes get their own codec
 (qzm). Already-compressed data (JPEG, PNG, video, zip) gains nothing and is stored; for photos use JPEG XL
 (`cjxl --lossless_jpeg=1`).
+</details>
+
+<details><summary><b>Will v1.1.0 open files written by v1.2.0?</b></summary>
+
+v1.2.0 reads every v1.1.0 file. v1.1.0 cannot read the new archive, log, and star-catalog streams
+Quick writes in this release. Re-compress those files with v1.2.0, or keep a v1.2.0 decoder around.
 </details>
 
 <details><summary><b>Why GPL-3.0?</b></summary>

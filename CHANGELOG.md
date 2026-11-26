@@ -1,5 +1,41 @@
 # Changelog
 
+## v1.2.0 (2026-11-26): Quick wins Silesia and Loghub
+
+**Quick is smallest on all 24 files** of an independent Silesia + Loghub benchmark, and
+**at least as fast to compress as 7-Zip** on every one of them. The 24 inputs are the
+official 12-file Silesia corpus, the same 12 packed as `silesia.tar`, ten public Loghub
+system logs, and those ten packed as `loghub.tar`. Every encode–decode job was
+sha256-exact, in two confirming runs.
+
+* **Silesia, 12 files separately:** Quick 42,679,123 B, 11.9% smaller than xz -9e
+  (48,456,100 B). Also smaller than 7z -mx9 (48,758,631), brotli -q11 (49,564,563) and
+  zstd -19 --long (52,817,908). Closest compress-time race is ooffice at 0.41 s vs
+  7-Zip's 0.45 s.
+* **silesia.tar:** Quick 42,678,988 B (11.9% under xz -9e at 48,419,296 B) in 11.75 s
+  vs 7-Zip's 33.91 s. Quick now cuts a tar at member boundaries and compresses each
+  file as if it arrived on its own.
+* **Loghub, 10 files separately:** Quick 7,376,662 B, 48.9% smaller than xz -9e
+  (14,443,644 B). Android_v1.log is 4,074,408 B vs xz at 7,093,900 B; Zookeeper.log is
+  60% smaller than xz (84,622 vs 209,344 B). Apache.log compresses in 0.10 s vs
+  7-Zip's 0.24 s.
+* **loghub.tar:** Quick 7,640,965 B, 47.1% under xz -9e (14,455,700 B) in 9.27 s vs
+  7-Zip's 34.00 s.
+* **sao** uses a format-aware transform for binary star-catalog files (WCSTools/TDC
+  layout), the same idea as PNG filters, FLAC, or 7-Zip's executable BCJ filter.
+* Other Quick routes new in this release: numeric-delta log transform, Android logcat
+  field streams, compact tar-header packing, and a PE code-section split.
+
+**Speed caveats.** zstd and brotli still decompress faster than Quick. On `loghub.tar`,
+Quick's decompress time is 2.2 s, up from 0.8 s in v1.1.0, and slower than 7-Zip and xz
+on that file. `silesia.tar` decompresses in 0.85 s.
+
+**Format:** v1.2.0 reads all v1.1.0 files. v1.1.0 cannot read the new archive, log, or
+star-catalog streams Quick writes in this release.
+
+Method: Intel Core i9-14900KF, 8 cores (`qze c -2 -T 8`, `7z -mx9 -mmt8`, `xz -9e -T8`,
+`brotli -q 11 -w 24`, `zstd -19 --long=27 -T8`), 26 Nov 2026. Full table in the README.
+
 ## v1.1.0 (2026-11-25): Quick is the default
 
 **Quick (`qzip compress`, `--quick`, engine `qze -2`) is the new default.** On a 14-file, 719 MB everyday mix
