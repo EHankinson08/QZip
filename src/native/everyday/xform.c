@@ -268,7 +268,8 @@ static int syslog_parse(const uint8_t *p, size_t ln,
   size_t i = 4; if (i < ln && p[i] == ' ') i++;
   if (i >= ln || !is_digit(p[i])) return 0;
   int d = 0; while (i < ln && is_digit(p[i])) { d = d * 10 + (p[i] - '0'); i++; }
-  if (i >= ln || p[i] != ' ') return 0; i++;
+  if (i >= ln || p[i] != ' ') return 0;
+  i++;
   if (i + 8 > ln || p[i+2] != ':' || p[i+5] != ':') return 0;
   int ok, hh, mm, ss;
   hh = parse_u(p+i, 2, &ok); if (!ok) return 0;
@@ -294,6 +295,24 @@ static int syslog_parse(const uint8_t *p, size_t ln,
   *rest = p + i; *rl = ln - i;
   return 1;
 }
+/* the decoder's line printer; the encoder keeps a line raw unless this reprints it byte-exactly (v1.1.1:
+   lines without "[pid]" or without the space after ':' used to break the whole-file round trip) */
+static int syslog_render(xbuf *o, int mon, int d, int t, const uint8_t *h, size_t hl, const uint8_t *pr, size_t pl, int pid, const uint8_t *m, size_t ml) {
+  if (mon<1||mon>12||t<0) return 1;
+  xput(o, MOMS[mon], 3); xpc(o,' ');
+  /* day right-aligned width 2 (space padded) */
+  if (d<10) xpc(o,' ');
+  else xpc(o, '0'+ (d/10)%10);
+  xpc(o, '0'+ (d%10)); xpc(o,' ');
+  int hh=t/3600, mm=(t%3600)/60, ss=t%60;
+  emit_u(o,hh,2); xpc(o,':'); emit_u(o,mm,2); xpc(o,':'); emit_u(o,ss,2);
+  xpc(o,' '); xput(o,h,hl);
+  xpc(o,' '); xput(o,pr,pl);
+  xpc(o,'[');
+  { char tmp[16]; int v=pid, k=0; if(v==0) tmp[k++]='0'; else { char r[16]; int rk=0; if(v<0){xpc(o,'-');v=-v;} while(v){r[rk++]=(char)('0'+v%10);v/=10;} while(rk) tmp[k++]=r[--rk]; } xput(o,tmp,(size_t)k); }
+  xput(o, "]: ", 3); xput(o,m,ml);
+  return 0;
+}
 int xf_syslog_encode(const uint8_t *s, size_t n, uint8_t **out, size_t *on) {
   lines_t L; lines_init(&L, s, n);
   const uint8_t *p; size_t ln; size_t nlines = 0;
@@ -313,10 +332,12 @@ int xf_syslog_encode(const uint8_t *s, size_t n, uint8_t **out, size_t *on) {
   uint32_t *msgl=(uint32_t*)malloc(nlines*sizeof(uint32_t));
   if (!hosts||!procs||!mo||!day||!tod||!hid||!prd||!pid||!msg||!msgl) return 0;
   lines_init(&L, s, n);
-  size_t i = 0;
+  size_t i = 0; xbuf chk = {0};
   while (lines_next(&L, &p, &ln)) {
     int m,d,tm,id; const uint8_t *h,*pr,*r; size_t hl,pl,rl;
-    if (syslog_parse(p, ln, &m, &d, &tm, &h, &hl, &pr, &pl, &id, &r, &rl)) {
+    int okl = syslog_parse(p, ln, &m, &d, &tm, &h, &hl, &pr, &pl, &id, &r, &rl);
+    if (okl) { chk.n = 0; okl = !syslog_render(&chk, m, d, tm, h, hl, pr, pl, id, r, rl) && chk.n == ln && !memcmp(chk.b, p, ln); }
+    if (okl) {
       uint32_t u;
       for (u=0;u<nh;u++) if (hosts[u].n==hl && !memcmp(hosts[u].s,h,hl)) break;
       if (u==nh) { if (nh==hcap){hcap*=2;hosts=(name_t*)realloc(hosts,hcap*sizeof(name_t));} hosts[nh].s=h;hosts[nh].n=(uint16_t)hl; nh++; }
@@ -345,7 +366,7 @@ int xf_syslog_encode(const uint8_t *s, size_t n, uint8_t **out, size_t *on) {
     for(size_t k=0;k<nlines;k++){xpvz(&o,pid[k]-f);f=pid[k];}
   }
   for (size_t k=0;k<nlines;k++){ xput(&o,msg[k],msgl[k]); if(k+1<nlines) xpc(&o,'\n'); }
-  free(hosts);free(procs);free(mo);free(day);free(tod);free(hid);free(prd);free(pid);free(msg);free(msgl);
+  free(hosts);free(procs);free(mo);free(day);free(tod);free(hid);free(prd);free(pid);free(msg);free(msgl);free(chk.b);
   *out=o.b; *on=o.n; return 1;
 }
 int xf_syslog_decode(const uint8_t *t, size_t tn, uint8_t *dst, size_t want) {
@@ -382,22 +403,8 @@ int xf_syslog_decode(const uint8_t *t, size_t tn, uint8_t *dst, size_t want) {
     if (tod[i] < 0) {
       xput(&o,m,ml);
     } else {
-      int mon=(int)mo[i]; if (mon<1||mon>12){bad=1;break;}
-      xput(&o, MOMS[mon], 3); xpc(&o,' ');
-      /* day right-aligned width 2 (space padded) */
-      int d=(int)day[i];
-      if (d<10) xpc(&o,' ');
-      else xpc(&o, '0'+ (d/10)%10);
-      xpc(&o, '0'+ (d%10)); xpc(&o,' ');
-      int t=(int)tod[i]; if (t<0){bad=1;break;}
-      int hh=t/3600, mm=(t%3600)/60, ss=t%60;
-      emit_u(&o,hh,2); xpc(&o,':'); emit_u(&o,mm,2); xpc(&o,':'); emit_u(&o,ss,2);
       if (hid[i]<0||(uint64_t)hid[i]>=nh || prd[i]<0||(uint64_t)prd[i]>=np){bad=1;break;}
-      xpc(&o,' '); xput(&o,hname[hid[i]],hlen[hid[i]]);
-      xpc(&o,' '); xput(&o,pname[prd[i]],plen[prd[i]]);
-      xpc(&o,'[');
-      { char tmp[16]; int v=(int)pid[i], k=0; if(v==0) tmp[k++]='0'; else { char r[16]; int rk=0; if(v<0){xpc(&o,'-');v=-v;} while(v){r[rk++]=(char)('0'+v%10);v/=10;} while(rk) tmp[k++]=r[--rk]; } xput(&o,tmp,(size_t)k); }
-      xput(&o, "]: ", 3); xput(&o,m,ml);
+      if (syslog_render(&o, (int)mo[i], (int)day[i], (int)tod[i], hname[hid[i]], hlen[hid[i]], pname[prd[i]], plen[prd[i]], (int)pid[i], m, ml)) {bad=1;break;}
     }
     if (crlf) xput(&o,"\r\n",2); else xpc(&o,'\n');
   }
@@ -405,6 +412,108 @@ int xf_syslog_decode(const uint8_t *t, size_t tn, uint8_t *dst, size_t want) {
   if (!bad && o.n == want) memcpy(dst, o.b, want); else bad = 1;
   free(hname);free(hlen);free(pname);free(plen);free(mo);free(day);free(tod);free(hid);free(prd);free(pid);free(o.b);
   return bad;
+}
+
+
+/* -------- Android logcat "threadtime" lines: "MM-DD HH:MM:SS.mmm %5d %5d L rest" (QZLOG1A).
+   The input is split at every '\n' into k pieces (the last may be empty). Each piece is either parsed (level byte
+   'A'..'Z') or kept raw (level byte 0). Streams: k, lengths, time deltas (ms, zigzag), pid deltas, tid - pid,
+   level bytes, then the message pieces joined by '\n'. Parsed lines must re-print byte-exactly. */
+static int lc_field(const uint8_t *p, size_t ln, size_t *i, long *v) {
+  /* printf("%5d"): spaces then digits, total width max(5, ndigits); no leading zeros except "0" */
+  size_t a = *i, sp = 0; while (a + sp < ln && p[a + sp] == ' ') sp++;
+  size_t d = a + sp, e = d; while (e < ln && is_digit(p[e])) e++;
+  size_t nd = e - d; if (nd == 0 || nd > 9 || (nd > 1 && p[d] == '0')) return 0;
+  if ((nd < 5 && sp != 5 - nd) || (nd >= 5 && sp != 0)) return 0;
+  long r = 0; for (size_t k = d; k < e; k++) r = r * 10 + (p[k] - '0');
+  *v = r; *i = e; return 1;
+}
+static int logcat_parse(const uint8_t *p, size_t ln, int64_t *A, long *pid, long *tid, uint8_t *lv, size_t *rest) {
+  if (ln < 33 || p[2] != '-' || p[5] != ' ' || p[8] != ':' || p[11] != ':' || p[14] != '.' || p[18] != ' ') return 0;
+  int ok, mo, d, h, mi, sc, ms;
+  mo = parse_u(p, 2, &ok); if (!ok) return 0;
+  d = parse_u(p + 3, 2, &ok); if (!ok || d > 31) return 0;
+  h = parse_u(p + 6, 2, &ok); if (!ok || h > 23) return 0;
+  mi = parse_u(p + 9, 2, &ok); if (!ok || mi > 59) return 0;
+  sc = parse_u(p + 12, 2, &ok); if (!ok || sc > 59) return 0;
+  ms = parse_u(p + 15, 3, &ok); if (!ok) return 0;
+  size_t i = 19;
+  if (!lc_field(p, ln, &i, pid)) return 0;
+  if (i >= ln || p[i] != ' ') return 0;
+  i++;
+  if (!lc_field(p, ln, &i, tid)) return 0;
+  if (i + 3 > ln || p[i] != ' ' || p[i + 1] < 'A' || p[i + 1] > 'Z' || p[i + 2] != ' ') return 0;
+  *lv = p[i + 1]; *rest = i + 3;
+  *A = ((int64_t)(mo * 32 + d) * 86400000) + (int64_t)(((h * 60 + mi) * 60 + sc) * 1000 + ms);
+  return 1;
+}
+int looks_logcat(const uint8_t *s, size_t n) {
+  size_t k = n < 65536 ? n : 65536, i = 0; int tot = 0, ok = 0;
+  while (i < k && tot < 200) {
+    size_t e = i; while (e < k && s[e] != '\n') e++;
+    if (e >= k) break;
+    int64_t A; long pid, tid; uint8_t lv; size_t r;
+    tot++; ok += logcat_parse(s + i, e - i, &A, &pid, &tid, &lv, &r);
+    i = e + 1;
+  }
+  return tot >= 8 && ok * 10 >= tot * 9;
+}
+int xf_logcat_encode(const uint8_t *s, size_t n, uint8_t **out, size_t *on) {
+  xbuf ts = {0}, pd = {0}, td = {0}, lvb = {0}, msg = {0};
+  size_t k = 0, i = 0, parsed = 0; int64_t pA = 0; long ppid = 0;
+  for (;;) {
+    size_t e = i; while (e < n && s[e] != '\n') e++;
+    int64_t A; long pid, tid; uint8_t lv; size_t r;
+    if (logcat_parse(s + i, e - i, &A, &pid, &tid, &lv, &r)) {
+      xpvz(&ts, A - pA); pA = A; xpvz(&pd, (int64_t)pid - ppid); ppid = pid; xpvz(&td, (int64_t)tid - pid);
+      xpc(&lvb, lv); if (k) xpc(&msg, '\n'); xput(&msg, s + i + r, e - i - r); parsed++;
+    } else { xpc(&lvb, 0); if (k) xpc(&msg, '\n'); xput(&msg, s + i, e - i); }
+    k++;
+    if (e >= n) break;
+    i = e + 1;
+  }
+  if (parsed * 2 < k) { free(ts.b); free(pd.b); free(td.b); free(lvb.b); free(msg.b); return 0; }
+  xbuf o = {0};
+  xput(&o, "QZLOG1A", 7); xpv(&o, k); xpv(&o, ts.n); xpv(&o, pd.n); xpv(&o, td.n);
+  xput(&o, ts.b, ts.n); xput(&o, pd.b, pd.n); xput(&o, td.b, td.n); xput(&o, lvb.b, lvb.n); xput(&o, msg.b, msg.n);
+  free(ts.b); free(pd.b); free(td.b); free(lvb.b); free(msg.b);
+  *out = o.b; *on = o.n; return 1;
+}
+static void lc_num(xbuf *o, long v, int w) {   /* %*ld without printf */
+  char r[24]; int k = 0; do { r[k++] = (char)('0' + v % 10); v /= 10; } while (v);
+  for (int i = k; i < w; i++) xpc(o, ' ');
+  while (k) xpc(o, r[--k]);
+}
+int xf_logcat_decode(const uint8_t *t, size_t tn, uint8_t *dst, size_t want) {
+  if (tn < 7 || memcmp(t, "QZLOG1A", 7)) return 1;
+  size_t p = 7; uint64_t k, tl, pl, dl;
+  if (xgv(t, tn, &p, &k) || xgv(t, tn, &p, &tl) || xgv(t, tn, &p, &pl) || xgv(t, tn, &p, &dl)) return 1;
+  if (k == 0 || k > tn || tl > tn || pl > tn || dl > tn || p + tl + pl + dl + k > tn) return 1;
+  size_t tp = p, te = p + tl, pp = te, pe = te + pl, dp = pe, de = pe + dl, lp = de, mp = de + k;
+  if (mp > tn) return 1;
+  xbuf o = {0}; int bad = 0; int64_t A = 0; long pid = 0;
+  for (uint64_t j = 0; j < k && !bad; j++) {
+    uint8_t lv = t[lp + j];
+    size_t a = mp; while (mp < tn && t[mp] != '\n') mp++;
+    const uint8_t *m = t + a; size_t ml = mp - a; if (j + 1 < k) { if (mp >= tn) { bad = 1; break; } mp++; }
+    if (lv) {
+      uint64_t v1, v2, v3;
+      if (xgv(t, te, &tp, &v1) || xgv(t, pe, &pp, &v2) || xgv(t, de, &dp, &v3)) { bad = 1; break; }
+      A += unzig64(v1); pid += (long)unzig64(v2); long tid = pid + (long)unzig64(v3);
+      if (A < 0 || pid < 0 || tid < 0) { bad = 1; break; }
+      int64_t day = A / 86400000, tod = A % 86400000;
+      int mo = (int)(day / 32), d = (int)(day % 32), ms = (int)(tod % 1000), sc = (int)(tod / 1000 % 60), mi = (int)(tod / 60000 % 60), h = (int)(tod / 3600000);
+      if (mo > 99) { bad = 1; break; }
+      emit_u(&o, mo, 2); xpc(&o, '-'); emit_u(&o, d, 2); xpc(&o, ' ');
+      emit_u(&o, h, 2); xpc(&o, ':'); emit_u(&o, mi, 2); xpc(&o, ':'); emit_u(&o, sc, 2); xpc(&o, '.'); emit_u(&o, ms, 3);
+      xpc(&o, ' '); lc_num(&o, pid, 5); xpc(&o, ' '); lc_num(&o, tid, 5); xpc(&o, ' '); xpc(&o, lv); xpc(&o, ' ');
+    }
+    xput(&o, m, ml);
+    if (j + 1 < k) xpc(&o, '\n');
+  }
+  if (!bad && (mp != tn || tp != te || pp != pe || dp != de)) bad = 1;
+  if (!bad && o.n == want) memcpy(dst, o.b, want); else bad = 1;
+  free(o.b); return bad;
 }
 
 int xf_log_encode(const uint8_t *s, size_t n, uint8_t **out, size_t *on) {
@@ -415,6 +524,7 @@ int xf_log_encode(const uint8_t *s, size_t n, uint8_t **out, size_t *on) {
 int xf_log_decode(const uint8_t *t, size_t tn, uint8_t *dst, size_t want) {
   if (tn >= 7 && !memcmp(t, "QZLOG1H", 7)) return xf_health_decode(t, tn, dst, want);
   if (tn >= 7 && !memcmp(t, "QZLOG1S", 7)) return xf_syslog_decode(t, tn, dst, want);
+  if (tn >= 7 && !memcmp(t, "QZLOG1A", 7)) return xf_logcat_decode(t, tn, dst, want);
   return 1;
 }
 

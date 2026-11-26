@@ -12,7 +12,8 @@
  * built single-thread (Z7_ST); parallelism is at block level. No x86-only required intrinsics.
  *
  * Format "QZE1": magic[4] u8 ver=1 u8 tier u8 delim(0=none) u8 flags | u64 n | u32 nblocks
- *   per block: u8 backend(0 stored,1 zstd,2 bsc,3 lzma) u8 transform(0 none,1 csv,2 sqlite-pages,3 log,4 json-keys,5 bcj)
+ *   per block: u8 backend(0 stored,1 zstd,2 bsc,3 lzma,4 lzma2,5 lzma shared-window,6 nested QZE1 stream = one tar
+ *              segment, top level only) u8 transform(0 none,1 csv,2 sqlite-pages,3 log,4 json-keys,5 bcj)
  *              u32 rawlen u32 tlen u32 clen u64 xxh64
  *   LZMA payload is 5-byte props + packed bytes. SQLite transform is self-contained per block (QZSQL1).
  *   payloads follow in block order. */
@@ -252,7 +253,7 @@ static int ncpu(void) {
 }
 
 /* ------------------------------------------------------------------ blocks */
-enum { B_STORED = 0, B_ZSTD = 1, B_BSC = 2, B_LZMA = 3, B_LZMA2 = 4, B_LZMAP = 5 };
+enum { B_STORED = 0, B_ZSTD = 1, B_BSC = 2, B_LZMA = 3, B_LZMA2 = 4, B_LZMAP = 5, B_NEST = 6 };
 typedef struct { const uint8_t *raw; size_t rawlen; uint8_t backend, transform; buf t; buf c; uint64_t h; int err; } blk_t;
 typedef struct { blk_t *b; int tier, delim, zlevel, first_csv; int lzma_level; unsigned lzma_dict; unsigned pagesz; int lzp_min; int xf; int linecut; int pdf; const uint8_t *base; int primed; } cctx_t;
 #ifndef LZMA_SOLID_MAX
@@ -272,7 +273,8 @@ static size_t zstd_into(buf *o, const uint8_t *s, size_t n, int level, int wlog)
 }
 static size_t bsc_into2(buf *o, const uint8_t *s, size_t n, int sorter, int coder, int lzpmin) {
   o->n = 0; bres(o, n + LIBBSC_HEADER_SIZE + 64);
-  int r = bsc_compress(s, o->b, (int)n, lzpmin ? 16 : 0, lzpmin ? lzpmin : 0, sorter, coder, LIBBSC_FEATURE_FASTMODE);
+  int lzph = 16;
+  int r = bsc_compress(s, o->b, (int)n, lzpmin ? lzph : 0, lzpmin ? lzpmin : 0, sorter, coder, LIBBSC_FEATURE_FASTMODE);
   if (r < 0) return 0; o->n = (size_t)r; return (size_t)r;
 }
 static size_t bsc_into(buf *o, const uint8_t *s, size_t n, int coder) {
@@ -307,6 +309,7 @@ static int lzma_from(uint8_t *dst, size_t want, const uint8_t *c, size_t cl) {
    content-defined 12-byte hash table (see LzmaEnc_MemEncodePrimed). lc4 lp0 pb0, nice 273, mc 48.
    The decoder needs nothing new except order: block i decodes after blocks 0..i-1 (sequential pass). */
 #define LZMAP_BLOCKS 8
+static size_t g_lzmap_blocks = LZMAP_BLOCKS;
 static size_t lzmap_into(buf *o, const uint8_t *base, size_t pre, size_t n, size_t total) {
   size_t cap = n + n / 3 + 65536 + LZMA_PROPS_SIZE;
   o->n = 0; bres(o, cap);
@@ -350,6 +353,26 @@ static size_t lzma2_into(buf *o, const uint8_t *s, size_t n, int text) {
   if (text) { pr.lzmaProps.lc = 2; pr.lzmaProps.fb = 64; pr.lzmaProps.mc = 16; pr.lzmaProps.numThreads = 2; }
   else { pr.lzmaProps.lc = 0; pr.lzmaProps.numThreads = 1; }
   pr.lzmaProps.reduceSize = n; pr.blockSize = LZMA2_ENC_PROPS_BLOCK_SIZE_SOLID; pr.numBlockThreads_Max = 1; pr.numTotalThreads = 1;
+  if (Lzma2Enc_SetProps(h, &pr) != SZ_OK) { Lzma2Enc_Destroy(h); return 0; }
+  Lzma2Enc_SetDataSize(h, n);
+  o->b[0] = Lzma2Enc_WriteProperties(h);
+  size_t dl = cap - 1;
+  SRes r = Lzma2Enc_Encode2(h, NULL, o->b + 1, &dl, NULL, s, n, NULL);
+  Lzma2Enc_Destroy(h);
+  if (r != SZ_OK) return 0;
+  o->n = 1 + dl; return o->n;
+}
+/* v1.1.1: solid LZMA2 at the SDK level-9 literal settings (lc3 lp0 pb2) for near-random binaries (sao): LZMA2
+   stores chunks that do not compress, where LZMA1 pays a little on every one. Same B_LZMA2 stream format. */
+static int g_solid2 = 0;
+static size_t lzma2_bin_into(buf *o, const uint8_t *s, size_t n) {
+  size_t cap = n + n / 16 + 65536;
+  o->n = 0; bres(o, cap);
+  CLzma2EncHandle h = Lzma2Enc_Create(&g_Alloc, &g_Alloc);
+  if (!h) return 0;
+  CLzma2EncProps pr; Lzma2EncProps_Init(&pr);
+  pr.lzmaProps.level = 9; pr.lzmaProps.numThreads = 2;
+  pr.lzmaProps.reduceSize = n; pr.blockSize = LZMA2_ENC_PROPS_BLOCK_SIZE_SOLID; pr.numBlockThreads_Max = 1; pr.numTotalThreads = 2;
   if (Lzma2Enc_SetProps(h, &pr) != SZ_OK) { Lzma2Enc_Destroy(h); return 0; }
   Lzma2Enc_SetDataSize(h, n);
   o->b[0] = Lzma2Enc_WriteProperties(h);
@@ -487,6 +510,11 @@ static void comp_block(job_t *j, size_t i) {
       if (!b->err && b->c.n >= sn) { b->backend = B_STORED; b->c.n = 0; put(&b->c, src, sn); }
       return;
     }
+    if (C->lzma_level > 0 && g_solid2 && !b->transform) {
+      b->backend = B_LZMA2; if (!lzma2_bin_into(&b->c, src, sn)) b->err = 1;
+      if (!b->err && b->c.n >= sn) { b->backend = B_STORED; b->c.n = 0; put(&b->c, src, sn); }
+      return;
+    }
     if (C->lzma_level > 0) {
       int lv = C->lzma_level; unsigned dict = C->lzma_dict;
       b->backend = B_LZMA; if (!lzma_into(&b->c, src, sn, lv, dict)) b->err = 1;
@@ -522,7 +550,8 @@ static void comp_block(job_t *j, size_t i) {
   if (bbe < 0) { b->err = 1; return; }
   b->c = best; b->backend = (uint8_t)bbe; b->transform = (uint8_t)btr; free(b->t.b); b->t = bt;
 }
-typedef struct { const uint8_t *in; size_t inn; uint8_t *out; size_t *pay, *ooff; int err; size_t hdr; int pass; } dctx_t;
+typedef struct { const uint8_t *in; size_t inn; uint8_t *out; size_t *pay, *ooff; int err; size_t hdr; int pass; int depth, T2; } dctx_t;
+static int qze_decompress(const uint8_t *in, size_t n, int T, int depth, uint8_t **outp, size_t *onp);
 static void dec_block(job_t *j, size_t i) {
   dctx_t *D = (dctx_t *)j->ctx; const uint8_t *h = D->in + D->hdr + i * 22;
   int be = h[0], tr = h[1]; size_t raw = r32(h + 2), tl = r32(h + 6), cl = r32(h + 10); uint64_t xh = r64(h + 14);
@@ -535,6 +564,12 @@ static void dec_block(job_t *j, size_t i) {
   else if (be == B_LZMA) { if (lzma_from(tb, want, c, cl)) bad = 1; }
   else if (be == B_LZMA2) { if (lzma2_from(tb, want, c, cl)) bad = 1; }
   else if (be == B_LZMAP) { if (tr || lzmap_from(D->out, D->ooff[i], want, c, cl)) bad = 1; }
+  else if (be == B_NEST) {   /* tar member segment: a complete inner QZE1 stream (one level only) */
+    uint8_t *o2 = NULL; size_t n2 = 0;
+    if (tr || D->depth > 0 || qze_decompress(c, cl, D->T2, D->depth + 1, &o2, &n2) || n2 != want) bad = 1;
+    else memcpy(tb, o2, n2);
+    free(o2);
+  }
   else bad = 1;
   if (!bad && tr == 1) { if (csv_decode(tb, tl, dst, raw)) bad = 1; }
   else if (!bad && tr == 2) { if (sqlite_decode(tb, tl, dst, raw)) bad = 1; }
@@ -582,24 +617,137 @@ static int lzmap_gate(const uint8_t *in, size_t n) {
   return 1;
 }
 
-int main(int argc, char **argv) {
-#ifdef _WIN32
-  _setmode(_fileno(stdin), _O_BINARY); _setmode(_fileno(stdout), _O_BINARY);
+
+/* ------------------------------------------------------------------ tar member segmentation (Quick)
+   A ustar archive whose bytes are mostly large members (>= TARSEG_BIG each, >= half the archive, >= 2 of them)
+   is cut at member boundaries and every segment is coded as if it were its own file (an inner QZE1 stream,
+   block backend B_NEST). Each big member's data starts a segment, so it gets the same route (BWT text, solid
+   LZMA, log/CSV transforms, ...) as the standalone file; the next header + padding ride at its tail. Runs of
+   small members (>= TARSEG_RUN bytes) start at their first header, so they route like a small tarball.
+   Header-only decision (no trial coding). Segments are coded one after another, each with all T threads. */
+typedef struct { int tier, T, bmb, zl, nocsv, force_lzma, lzp_min, depth; } copt_t;
+static void qze_compress(const uint8_t *in, size_t n, copt_t opt, buf *outb);
+#ifndef TARSEG_BIG
+#define TARSEG_BIG ((size_t)4 << 20)
 #endif
-  if (argc < 4) { fprintf(stderr, "usage: qze c [-1|-2|-3] [-T n] [-b MB] [-L lvl] [-M lvl] [-P lzp] [-x] in out | qze d [-T n] in out\n"); return 2; }
-  int tier = 1, T = ncpu(), bmb = 0, zl = -1, nocsv = 0, force_lzma = 0, lzp_min = 0; int a = 2;
-  for (; a < argc - 2; a++) {
-    if (!strcmp(argv[a], "-1")) tier = 1; else if (!strcmp(argv[a], "-2")) tier = 2; else if (!strcmp(argv[a], "-3")) tier = 3;
-    else if (!strcmp(argv[a], "-T")) T = atoi(argv[++a]); else if (!strcmp(argv[a], "-b")) bmb = atoi(argv[++a]);
-    else if (!strcmp(argv[a], "-L")) zl = atoi(argv[++a]); else if (!strcmp(argv[a], "-x")) nocsv = 1;
-    else if (!strcmp(argv[a], "-M")) force_lzma = atoi(argv[++a]);
-    else if (!strcmp(argv[a], "-P")) lzp_min = atoi(argv[++a]);
-    else die("bad option");
+#ifndef TARSEG_RUN
+#define TARSEG_RUN ((size_t)1 << 20)
+#endif
+static int tar_num(const uint8_t *p, int k, size_t *v) {
+  size_t r = 0; int i = 0, any = 0;
+  while (i < k && p[i] == ' ') i++;
+  for (; i < k && p[i] >= '0' && p[i] <= '7'; i++) { r = r * 8 + (size_t)(p[i] - '0'); any = 1; if (r > ((size_t)1 << 40)) return -1; }
+  if (i < k && p[i] != 0 && p[i] != ' ') return -1;
+  if (!any) r = 0;
+  *v = r; return 0;
+}
+/* fills cuts[] (segment starts, cuts[0] = 0); returns the number of segments, 0 = do not segment */
+static size_t tarseg_plan(const uint8_t *in, size_t n, size_t **cutsp) {
+  if (n < ((size_t)16 << 20) || n > ((size_t)0xF0000000u) || memcmp(in + 257, "ustar", 5)) return 0;
+  size_t cap = 1024, nm = 0, *hs = (size_t *)malloc(cap * sizeof(size_t)), *ds = (size_t *)malloc(cap * sizeof(size_t)), *dl = (size_t *)malloc(cap * sizeof(size_t));
+  size_t p = 0, big = 0, nbig = 0; int ok = 1;
+  while (p + 512 <= n) {
+    const uint8_t *h = in + p; int zero = 1;
+    for (int i = 0; i < 512; i++) if (h[i]) { zero = 0; break; }
+    if (zero) break;
+    size_t chk, sz; unsigned sum = 0;
+    for (int i = 0; i < 512; i++) sum += (i >= 148 && i < 156) ? ' ' : h[i];
+    if (tar_num(h + 148, 8, &chk) || chk != sum || tar_num(h + 124, 12, &sz)) { ok = 0; break; }
+    size_t d0 = p + 512; if (d0 + sz > n || d0 + sz < d0) { ok = 0; break; }
+    uint8_t ty = h[156];
+    if (nm == cap) { cap *= 2; hs = (size_t *)realloc(hs, cap * sizeof(size_t)); ds = (size_t *)realloc(ds, cap * sizeof(size_t)); dl = (size_t *)realloc(dl, cap * sizeof(size_t)); }
+    hs[nm] = p; ds[nm] = d0; dl[nm] = (ty == '0' || ty == 0 || ty == '7') ? sz : 0;
+    if (dl[nm] >= TARSEG_BIG) { big += dl[nm]; nbig++; }
+    nm++;
+    p = d0 + ((sz + 511) & ~(size_t)511);
   }
-  if (T < 1) T = 1; if (T > 256) T = 256;
-  if (bsc_init(LIBBSC_FEATURE_FASTMODE) != LIBBSC_NO_ERROR) die("libbsc init");
-  size_t n; uint8_t *in = readall(argv[argc - 2], &n);
-  if (argv[1][0] == 'c') {
+  size_t ns = 0;
+  if (ok && nbig >= 2 && big * 2 >= n) {
+    size_t *cuts = (size_t *)malloc((2 * nm + 2) * sizeof(size_t)); cuts[ns++] = 0;
+    int prev_big = 0;
+    for (size_t m = 0; m < nm; m++) {
+      int isbig = dl[m] >= TARSEG_BIG;
+      if (isbig) { if (ds[m] > cuts[ns - 1]) cuts[ns++] = ds[m]; }
+      else if (prev_big) {
+        size_t e = n; for (size_t k = m; k < nm; k++) if (dl[k] >= TARSEG_BIG) { e = hs[k]; break; }
+        if (e - hs[m] >= TARSEG_RUN && hs[m] > cuts[ns - 1]) cuts[ns++] = hs[m];
+      }
+      prev_big = isbig;
+    }
+    if (ns >= 2) *cutsp = cuts; else { free(cuts); ns = 0; }
+  }
+  free(hs); free(ds); free(dl);
+  return ns;
+}
+static int tarseg_compress(const uint8_t *in, size_t n, copt_t opt, buf *outb) {
+  size_t *cuts = NULL, ns = tarseg_plan(in, n, &cuts);
+  if (ns < 2) return 0;
+  buf *S = (buf *)calloc(ns, sizeof(buf));
+  copt_t io = opt; io.depth = opt.depth + 1;
+  for (size_t i = 0; i < ns; i++) {
+    size_t a = cuts[i], e = i + 1 < ns ? cuts[i + 1] : n;
+    qze_compress(in + a, e - a, io, &S[i]);
+  }
+  buf o = {0}; uint8_t hd[20]; memcpy(hd, "QZE1", 4); hd[4] = 1; hd[5] = (uint8_t)opt.tier; hd[6] = 0; hd[7] = 0; w64(hd + 8, n); w32(hd + 16, (uint32_t)ns);
+  put(&o, hd, 20);
+  for (size_t i = 0; i < ns; i++) {
+    size_t a = cuts[i], e = i + 1 < ns ? cuts[i + 1] : n;
+    uint8_t h[22]; h[0] = B_NEST; h[1] = 0; w32(h + 2, (uint32_t)(e - a)); w32(h + 6, 0); w32(h + 10, (uint32_t)S[i].n); w64(h + 14, XXH64(in + a, e - a, 0)); put(&o, h, 22);
+  }
+  for (size_t i = 0; i < ns; i++) { put(&o, S[i].b, S[i].n); free(S[i].b); }
+  free(S); free(cuts);
+  fprintf(stderr, "qze: %zu -> %zu B, %zu tar segments, tier %d\n", n, o.n, ns, opt.tier);
+  *outb = o; return 1;
+}
+
+/* ------------------------------------------------------------------ long-match LZMA route (Quick)
+   Logs with long repeated runs (Zookeeper / Apache / HPC / Android-class) code smaller with LZMA at nice 273 over a
+   window covering everything before (the shared-window B_LZMAP blocks) than with BWT. A cheap header check
+   (looks_logish) decides whether to run the one extra sample coder; the sample then decides. */
+static int looks_logish(const uint8_t *s, size_t n) {
+  size_t k = n < 65536 ? n : 65536, i = 0; int tot = 0, ok = 0;
+  while (i < k && tot < 400) {
+    uint8_t c = s[i];
+    size_t e = i; while (e < k && s[e] != '\n') e++;
+    if (e >= k && tot > 0) break;
+    if (e > i) { tot++; if ((c >= '0' && c <= '9') || c == '[' || (e - i >= 4 && s[i+3] == ' ' && c >= 'A' && c <= 'Z')) ok++; }
+    i = e + 1;
+  }
+  return tot >= 8 && ok * 5 >= tot * 4;
+}
+/* the same LZMA settings as one B_LZMAP block with no prefix (sample size estimate) */
+static size_t lzma_long_into(buf *o, const uint8_t *s, size_t n) {
+  size_t cap = n + n / 3 + 65536 + LZMA_PROPS_SIZE;
+  o->n = 0; bres(o, cap);
+  size_t destLen = cap - LZMA_PROPS_SIZE, propsSize = LZMA_PROPS_SIZE;
+  CLzmaEncProps pr; LzmaEncProps_Init(&pr); pr.level = 9; pr.dictSize = (UInt32)(n < 4096 ? 4096 : n);
+  pr.lc = 4; pr.lp = 0; pr.pb = 0; pr.fb = 273; pr.mc = 48; pr.numThreads = 2;
+  int r = LzmaEncode(o->b + LZMA_PROPS_SIZE, &destLen, s, n, &pr, o->b, &propsSize, 0, NULL, &g_Alloc, &g_Alloc);
+  if (r != SZ_OK || propsSize != LZMA_PROPS_SIZE) return 0;
+  o->n = LZMA_PROPS_SIZE + destLen; return o->n;
+}
+/* shared-window block count for the log route: small files keep one or two blocks (each block restarts the
+   LZMA models, which costs ~1% on a 10 MB log); 16 MB and up use the 8 parallel blocks */
+static size_t log_lzmap_blocks(size_t n) { return n < ((size_t)8 << 20) ? 1 : n < ((size_t)16 << 20) ? 2 : LZMAP_BLOCKS; }
+/* sample coders run in parallel (each is single-block; outputs only feed routing decisions) */
+enum { SJ_BSC = 0, SJ_ZSTD = 1, SJ_LZMA8 = 2, SJ_LONG = 3 };
+typedef struct { int kind; const uint8_t *s; size_t n; int zl, lg; size_t out; } sjob_t;
+static void sample_job(job_t *j, size_t i) {
+  sjob_t *J = &((sjob_t *)j->ctx)[i]; buf c = {0};
+  if (J->kind == SJ_BSC) J->out = bsc_into2(&c, J->s, J->n, LIBBSC_BLOCKSORTER_BWT, LIBBSC_CODER_QLFC_STATIC, 0);
+  else if (J->kind == SJ_ZSTD) J->out = zstd_into(&c, J->s, J->n, J->zl, J->lg);
+  else if (J->kind == SJ_LZMA8) J->out = lzma_into(&c, J->s, J->n, 9, 8u << 20);
+  else J->out = lzma_long_into(&c, J->s, J->n);
+  free(c.b);
+}
+static void run_samples(sjob_t *J, size_t nj, int T) { run_par(sample_job, J, nj, T < (int)nj ? T : (int)nj); }
+static size_t line_cut(const uint8_t *s, size_t n, size_t want) { size_t sl = n < want ? n : want; while (sl < n && s[sl - 1] != '\n') sl++; return sl; }
+
+static void qze_compress(const uint8_t *in, size_t n, copt_t opt, buf *outb) {
+  int tier = opt.tier, T = opt.T, bmb = opt.bmb, zl = opt.zl, nocsv = opt.nocsv, force_lzma = opt.force_lzma, lzp_min = opt.lzp_min;
+  g_lzma_fb = 0; g_lzma_mc = 0; g_lzma_lclppb = 0; g_lzmap_blocks = LZMAP_BLOCKS; g_solid2 = 0;
+  if (tier == 2 && opt.depth == 0 && !bmb && !force_lzma && !lzp_min && tarseg_compress(in, n, opt, outb)) return;
+  {
     if (zl < 0) zl = tier == 1 ? 0 : tier == 2 ? B2LV : 19;   /* tier 1: 0 = per block (3 CSV-transformed, 5 other) */
     size_t bs = (size_t)(bmb > 0 ? bmb : (tier == 1 ? 4 : tier == 2 ? B2MB : 32)) << 20;
     int delim = nocsv ? 0 : detect_delim(in, n);
@@ -622,22 +770,39 @@ int main(int argc, char **argv) {
           else if (n > ((size_t)16 << 20)) bs = (size_t)16 << 20;
           else bs = (size_t)8 << 20;
         }
+        if (!looks_health(in, n)) {
+          /* v1.1.1: syslog whose transformed sample codes larger with BWT than the raw sample with long-match
+             LZMA (Linux.log-class: few repeated hosts/procs, long repeated messages) -> shared-window LZMA. */
+          size_t sl = line_cut(in, n, (size_t)4 << 20);
+          uint8_t *ob = NULL; size_t on = 0;
+          if (!bmb && xf_log_encode(in, sl, &ob, &on) && ob) {
+            sjob_t J[2] = {{SJ_BSC, ob, on, 0, 0, 0}, {SJ_LONG, in, sl, 0, 0, 0}};
+            run_samples(J, 2, T);
+            size_t a1 = J[0].out, a4 = J[1].out;
+            /* LZMA must win by 8% (Mac.log: 2% on the sample, BWT wins the whole file by 8%) */
+            if (a4 && a1 && a4 * 100 < a1 * 92) { xf = 0; linecut = 0; primed = 1; g_lzmap_blocks = log_lzmap_blocks(n); }
+            free(ob);
+          }
+        }
         if (looks_health(in, n)) {
           /* After the log transform, LZMA usually beats BWT (the header is binary). Sample both. */
           size_t sl = n < bs ? n : bs;
           while (sl < n && in[sl - 1] != '\n') sl++;
           uint8_t *ob = NULL; size_t on = 0;
           if (xf_health_encode(in, sl, &ob, &on) && ob) {
-            buf c1 = {0}, c3 = {0};
-            size_t a1 = bsc_into2(&c1, ob, on, LIBBSC_BLOCKSORTER_BWT, LIBBSC_CODER_QLFC_STATIC, 0);
-            size_t a3 = lzma_into(&c3, ob, on, 9, 8u << 20);
+            sjob_t J[2] = {{SJ_BSC, ob, on, 0, 0, 0}, {SJ_LZMA8, ob, on, 0, 0, 0}};
+            run_samples(J, 2, T);
+            size_t a1 = J[0].out, a3 = J[1].out;
             if (a3 && (!a1 || a3 < a1)) { lzma_level = 9; lzma_dict = 8u << 20; }
-            free(c1.b); free(c3.b); free(ob);
+            free(ob);
           }
           /* Whole-file transform, then 4 MB LZMA blocks of the xf bytes (per-block
              transforms lose ~100 KB to restarting deltas and miss brotli). */
           if (xf_health_encode(in, n, &xf_payload, &xf_len) && xf_payload) {
             file_xf = XF_LOG; orig_xxh = XXH64(in, n, 0); xf = 0; /* blocks see already-transformed data */
+            /* v1.1.1: the transformed stream codes ~12% smaller as shared-window LZMA (nice 273) than as 4 MB
+               LZMA-8MB blocks (HealthApp 1,248,636 -> ~1,100,000 B) at a similar speed with 8 blocks */
+            if (lzma_level && !bmb) { primed = 1; lzma_level = 0; lzma_dict = 0; g_lzmap_blocks = log_lzmap_blocks(xf_len); }
           }
         }
       } else if (looks_ndjson(in, n)) {
@@ -645,6 +810,22 @@ int main(int argc, char **argv) {
         if (!bmb && n > ((size_t)32 << 20)) bs = (size_t)32 << 20;
       } else if (!bmb && lzmap_gate(in, n)) {
         primed = 1; delim = 0;
+      } else if (!bmb && looks_logcat(in, n) && xf_logcat_encode(in, n, &xf_payload, &xf_len) && xf_payload) {
+        /* v1.1.1: Android logcat (threadtime): time / pid / tid / level split into delta streams, then shared-window
+           LZMA (Android_v1: 7,951,386 -> ~4.9 MB, about 2x faster than BWT+LZMA on the raw text would need).
+           The transform is checked by decoding it here. */
+        uint8_t *chk = (uint8_t *)malloc(n ? n : 1);
+        if (chk && !xf_logcat_decode(xf_payload, xf_len, chk, n) && !memcmp(chk, in, n)) {
+          file_xf = XF_LOG; orig_xxh = XXH64(in, n, 0); delim = 0; primed = 1; g_lzmap_blocks = log_lzmap_blocks(xf_len);
+        } else { free(xf_payload); xf_payload = NULL; xf_len = 0; }
+        free(chk);
+      } else if (!bmb && n > LZMA_SOLID_MAX && !delim && is_texty(in, n) && looks_logish(in, n)) {
+        /* v1.1.1: other big logs: 4 MB sample, BWT vs long-match LZMA; LZMA -> shared-window blocks */
+        size_t sl = line_cut(in, n, (size_t)4 << 20);
+        sjob_t J[2] = {{SJ_BSC, in, sl, 0, 0, 0}, {SJ_LONG, in, sl, 0, 0, 0}};
+        run_samples(J, 2, T);
+        size_t a1 = J[0].out, a4 = J[1].out;
+        if (a4 && a1 && a4 < a1) { primed = 1; g_lzmap_blocks = LZMAP_BLOCKS; }
       } else if (n <= LZMA_SOLID_MAX || (n <= ((size_t)64 << 20) && n >= 262 && !memcmp(in + 257, "ustar", 5))) {
         /* Tarballs / PDFs / executables: a short prefix is a poor predictor (BWT can win the first
            few MB of a ustar of source, then lose on the whole file). Use solid lzma-9 directly.
@@ -654,6 +835,20 @@ int main(int argc, char **argv) {
         int container = is_ustar;
         if (n >= 4 && (!memcmp(in, "%PDF", 4) || !memcmp(in, "ELF", 4) || !memcmp(in, "PK", 4))) container = 1;
         if (n >= 2 && in[0] == 'M' && in[1] == 'Z') container = 1;
+        /* v1.1.1: text-heavy ustar / PDF (silesia xml: a tar of XML files; reymont: an uncompressed text PDF) codes
+           far smaller with BWT. Three 384 KB samples (start, 1/3, 2/3); BWT must win by 15% so source tarballs and
+           ordinary PDFs keep LZMA. .pyc- and RISC-heavy tars keep their tuned LZMA without sampling. */
+        int textcont = 0;
+        if (container && n >= ((size_t)1 << 20) && (is_ustar || !memcmp(in, "%PDF", 4)) &&
+            !(is_ustar && (xf_tar_ext_bytes(in, n, "pyc") * 4 >= n || xf_tar_risc_bytes(in, n) * 2 >= n))) {
+          size_t q = (size_t)384 << 10, at[3] = {0, n / 3, 2 * n / 3}; uint8_t *sm = (uint8_t *)malloc(3 * q); size_t sn = 0;
+          for (int k = 0; k < 3; k++) { size_t a0 = at[k], l = n - a0 < q ? n - a0 : q; memcpy(sm + sn, in + a0, l); sn += l; }
+          sjob_t J[2] = {{SJ_BSC, sm, sn, 0, 0, 0}, {SJ_LZMA8, sm, sn, 0, 0, 0}};
+          run_samples(J, 2, T);
+          size_t ab = J[0].out, al = J[1].out;
+          if (ab && al && ab * 100 < al * 85) { container = 0; textcont = 1; }
+          free(sm);
+        }
         if (container) {
           lzma_level = 9; lzma_dict = 0; if (!bmb) { bs = n ? n : 1; solid = 1; }
           if (is_ustar) {
@@ -682,14 +877,15 @@ int main(int argc, char **argv) {
           } else if (n >= 4 && !memcmp(in, "\x7f" "ELF", 4)) xf = XF_BCJ;
           else if (n >= 2 && in[0] == 'M' && in[1] == 'Z') xf = XF_BCJ;
         }
-        else {
+        else if (!textcont) {
           /* logs / prose: a 4 MB sample is enough (1 MB missed healthapp; 4 MB does not). */
           size_t sl = n < ((size_t)4 << 20) ? n : ((size_t)4 << 20);
-          buf c1 = {0}, c2 = {0}, c3 = {0};
-          size_t a1 = bsc_into2(&c1, in, sl, LIBBSC_BLOCKSORTER_BWT, LIBBSC_CODER_QLFC_STATIC, 0);
           int lg = 10; while (((size_t)1 << lg) < sl && lg < 27) lg++;
-          size_t a2 = zstd_into(&c2, in, sl, zl, lg);
-          size_t a3 = lzma_into(&c3, in, sl, 9, 8u << 20);
+          /* v1.1.1: the sample coders run in parallel; long-match LZMA joins them for log-like text */
+          int logish = is_texty(in, n) && looks_logish(in, n);
+          sjob_t J[4] = {{SJ_BSC, in, sl, 0, 0, 0}, {SJ_ZSTD, in, sl, zl, lg, 0}, {SJ_LZMA8, in, sl, 0, 0, 0}, {SJ_LONG, in, sl, 0, 0, 0}};
+          run_samples(J, logish ? 4 : 3, T);
+          size_t a1 = J[0].out, a2 = J[1].out, a3 = J[2].out, a4 = logish ? J[3].out : 0;
           /* pipe-delimited logs (healthapp) look like CSV to detect_delim; only keep CSV if it actually helps. */
           size_t a_csv = 0;
           if (delim) {
@@ -702,11 +898,13 @@ int main(int argc, char **argv) {
             free(sb.t.b);
           }
           int lzma_wins = a3 && (!a1 || a3 < a1) && (!a2 || a3 < a2) && (!a_csv || a3 < a_csv);
-          free(c1.b); free(c2.b); free(c3.b);
+          if (!bmb && a4 && (!a1 || a4 < a1) && (!a2 || a4 < a2) && (!a_csv || a4 < a_csv)) {
+            lzma_wins = 0; delim = 0; primed = 1; g_lzmap_blocks = log_lzmap_blocks(n);
+          }
           if (lzma_wins) {
             delim = 0;   /* raw LZMA beat the CSV path — don't force a log through the table transform */
             if (is_texty(in, n)) { lzma_level = 9; lzma_dict = 8u << 20; if (!bmb) bs = (size_t)8 << 20; }
-            else { lzma_level = 9; lzma_dict = 0; if (!bmb) { bs = n ? n : 1; solid = 1; } }
+            else { lzma_level = 9; lzma_dict = 0; if (!bmb) { bs = n ? n : 1; solid = 1; g_solid2 = 1; } }
           }
         }
       }
@@ -760,7 +958,7 @@ int main(int argc, char **argv) {
         if (z32 != (size_t)-1 && z0 != (size_t)-1 && z32 < z0) lzp_min = 32;
       }
     }
-    if (primed) bs = (pn + LZMAP_BLOCKS - 1) / LZMAP_BLOCKS;   /* fixed 8 blocks: output does not depend on -T */
+    if (primed) bs = (pn + g_lzmap_blocks - 1) / g_lzmap_blocks;   /* fixed 8 blocks: output does not depend on -T */
     size_t cap = pn / (bs > 1 ? bs : 1) + 2, nb = 0, p = 0; blk_t *B = (blk_t *)calloc(cap + 1, sizeof(blk_t));
     if (pdf_cut && pdf_cut < pn) {
       /* block 0 = header + rest, block 1 = all deflate bodies (splitting them costs ~25 KB on paper.pdf:
@@ -784,27 +982,32 @@ int main(int argc, char **argv) {
       uint8_t h[22]; h[0] = B[i].backend; h[1] = B[i].transform; w32(h + 2, (uint32_t)B[i].rawlen); w32(h + 6, (uint32_t)(B[i].transform ? B[i].t.n : 0)); w32(h + 10, (uint32_t)B[i].c.n); w64(h + 14, B[i].h); put(&o, h, 22);
     }
     for (size_t i = 0; i < nb; i++) { put(&o, B[i].c.b, B[i].c.n); free(B[i].c.b); free(B[i].t.b); }
-    writeall(argv[argc - 1], o.b, o.n);
+    free(B); *outb = o;
     if (xf_payload) free(xf_payload);
-    fprintf(stderr, "qze: %zu -> %zu B, %zu blocks, tier %d, delim %d\n", n, o.n, nb, tier, delim);
-  } else if (argv[1][0] == 'd') {
-    if (n < 20 || memcmp(in, "QZE1", 4) || in[4] != 1) die("not a qze stream");
+    if (opt.depth == 0) fprintf(stderr, "qze: %zu -> %zu B, %zu blocks, tier %d, delim %d\n", n, o.n, nb, tier, delim);
+  }
+}
+
+static int qze_decompress(const uint8_t *in, size_t n, int T, int depth, uint8_t **outp, size_t *onp) {
+  {
+    if (n < 20 || memcmp(in, "QZE1", 4) || in[4] != 1) return 3;
     size_t on = (size_t)r64(in + 8), nb = r32(in + 16);
     int file_xf = in[7];
     size_t hdr0 = 20, xflen = on; uint64_t orig_xxh = 0;
     if (file_xf) {
-      if (n < 36) die("truncated header");
+      if (n < 36) return 1;
       xflen = (size_t)r64(in + 20); orig_xxh = r64(in + 28); hdr0 = 36;
     }
-    if (hdr0 + nb * 22 > n) die("truncated header");
+    if (nb > n / 22 || hdr0 + nb * 22 > n) return 1;
     size_t *pay = (size_t *)malloc((nb + 1) * sizeof(size_t)), *oo = (size_t *)malloc((nb + 1) * sizeof(size_t)), p = hdr0 + nb * 22, q = 0;
     for (size_t i = 0; i < nb; i++) { const uint8_t *h = in + hdr0 + i * 22; pay[i] = p; oo[i] = q; p += r32(h + 10); q += r32(h + 2); }
-    if (p != n || q != (file_xf ? xflen : on)) die("corrupt header");
+    if (p != n || q != (file_xf ? xflen : on)) { free(pay); free(oo); return 1; }
     uint8_t *stage = (uint8_t *)malloc((file_xf ? xflen : on) ? (file_xf ? xflen : on) : 1);
-    dctx_t D = {in, n, stage, pay, oo, 0, hdr0, 0};
+    dctx_t D = {in, n, stage, pay, oo, 0, hdr0, 0, depth, nb >= (size_t)T ? 1 : (int)(T / (nb ? nb : 1))};
     run_par(dec_block, &D, nb, T);
     D.pass = 1; run_par(dec_block, &D, nb, 1);
-    if (D.err) die(D.err == 2 ? "checksum mismatch" : "corrupt block");
+    free(pay); free(oo);
+    if (D.err) { free(stage); return D.err == 2 ? 2 : 1; }
     uint8_t *out = stage;
     if (file_xf) {
       out = (uint8_t *)malloc(on ? on : 1);
@@ -815,9 +1018,38 @@ int main(int argc, char **argv) {
       else if (file_xf == XF_TAR) bad = xf_tar_sort_decode(stage, xflen, out, on);
       else if (file_xf == XF_PDF) bad = xf_pdf_split_decode(stage, xflen, out, on);
       free(stage);
-      if (bad) die("corrupt file transform");
-      if (XXH64(out, on, 0) != orig_xxh) die("checksum mismatch");
+      if (bad) { free(out); return 1; }
+      if (XXH64(out, on, 0) != orig_xxh) { free(out); return 2; }
     }
+    *outp = out; *onp = on; return 0;
+  }
+}
+
+int main(int argc, char **argv) {
+#ifdef _WIN32
+  _setmode(_fileno(stdin), _O_BINARY); _setmode(_fileno(stdout), _O_BINARY);
+#endif
+  if (argc < 4) { fprintf(stderr, "usage: qze c [-1|-2|-3] [-T n] [-b MB] [-L lvl] [-M lvl] [-P lzp] [-x] in out | qze d [-T n] in out\n"); return 2; }
+  int tier = 1, T = ncpu(), bmb = 0, zl = -1, nocsv = 0, force_lzma = 0, lzp_min = 0; int a = 2;
+  for (; a < argc - 2; a++) {
+    if (!strcmp(argv[a], "-1")) tier = 1; else if (!strcmp(argv[a], "-2")) tier = 2; else if (!strcmp(argv[a], "-3")) tier = 3;
+    else if (!strcmp(argv[a], "-T")) T = atoi(argv[++a]); else if (!strcmp(argv[a], "-b")) bmb = atoi(argv[++a]);
+    else if (!strcmp(argv[a], "-L")) zl = atoi(argv[++a]); else if (!strcmp(argv[a], "-x")) nocsv = 1;
+    else if (!strcmp(argv[a], "-M")) force_lzma = atoi(argv[++a]);
+    else if (!strcmp(argv[a], "-P")) lzp_min = atoi(argv[++a]);
+    else die("bad option");
+  }
+  if (T < 1) T = 1; if (T > 256) T = 256;
+  if (bsc_init(LIBBSC_FEATURE_FASTMODE) != LIBBSC_NO_ERROR) die("libbsc init");
+  size_t n; uint8_t *in = readall(argv[argc - 2], &n);
+  copt_t opt = {tier, T, bmb, zl, nocsv, force_lzma, lzp_min, 0};
+  if (argv[1][0] == 'c') {
+    buf o = {0}; qze_compress(in, n, opt, &o); writeall(argv[argc - 1], o.b, o.n);
+  } else if (argv[1][0] == 'd') {
+    uint8_t *out = NULL; size_t on = 0; int r = qze_decompress(in, n, T, 0, &out, &on);
+    if (r == 3) die("not a qze stream");
+    if (r == 2) die("checksum mismatch");
+    if (r) die("corrupt stream");
     writeall(argv[argc - 1], out, on);
   } else die("command must be c or d");
   return 0;
